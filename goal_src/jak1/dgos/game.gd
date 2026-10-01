@@ -233,7 +233,6 @@
   "cam-states.o"
   "cam-states-dbg.o"
   "cam-combiner.o"
-  "mc-passthrough.o" ;; added
   "cam-update.o"
   "vol-h.o"
   "cam-layout.o"
@@ -334,6 +333,7 @@
   "rigid-body.o"
   "nav-enemy-h.o"
   "nav-enemy.o"
+  "mc-passthrough.o" ;; added (after everything it hooks into)
   "baseplat.o"
   "basebutton.o"
   "tippy.o"

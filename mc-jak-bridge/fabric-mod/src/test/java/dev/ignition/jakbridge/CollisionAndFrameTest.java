@@ -51,12 +51,6 @@ class CollisionAndFrameTest {
     }
 
     @Test
-    void yOffsetFitsJakAboveMinecraftsBottom() {
-        assertEquals(0, JakCraftConfig.chooseYOffset(-10));
-        assertEquals(141, JakCraftConfig.chooseYOffset(-200.4));
-    }
-
-    @Test
     void frameReaderReadsCompleteFramesOnce() throws Exception {
         Path f = Files.createTempFile("frame", ".bin");
         ByteBuffer b = ByteBuffer.allocate(64 + 2 * 2 * 4).order(ByteOrder.LITTLE_ENDIAN);

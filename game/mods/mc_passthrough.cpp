@@ -69,6 +69,15 @@ struct CameraPacket {
   u32 buttons;
 };
 
+struct EventPacket {
+  u32 magic;
+  u16 version;
+  u16 type;
+  u32 seq;
+  u32 event;      // kEventExplosion, ...
+  float data[5];  // explosion: x, y, z (Jak meters), radius (m), power
+};
+
 struct JakStatePacket {
   u32 magic;
   u16 version;
@@ -80,6 +89,13 @@ struct JakStatePacket {
 
 static_assert(sizeof(CameraPacket) == 64, "CameraPacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(JakStatePacket) == 44, "JakStatePacket layout changed - update PROTOCOL.md");
+static_assert(sizeof(EventPacket) == 36, "EventPacket layout changed - update PROTOCOL.md");
+
+// Minecraft -> Jak gameplay events, consumed by GOAL with (pc-mc-pop-event ...)
+constexpr int kMaxQueuedEvents = 64;
+EventPacket g_events[kMaxQueuedEvents];
+int g_event_head = 0;  // next to pop
+int g_event_count = 0;
 
 std::mutex g_mutex;
 CameraPacket g_latest{};
@@ -98,6 +114,18 @@ void listen_loop() {
     sockaddr_in from{};
     addrlen_t from_len = sizeof(from);
     int n = recvfrom(g_sock, buf, (int)sizeof(buf), 0, (sockaddr*)&from, &from_len);
+    if (n >= (int)sizeof(EventPacket)) {
+      EventPacket ev;
+      memcpy(&ev, buf, sizeof(ev));
+      if (ev.magic == kMagic && ev.version == kVersion && ev.type == kTypeEvent) {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        if (g_event_count < kMaxQueuedEvents) {
+          g_events[(g_event_head + g_event_count) % kMaxQueuedEvents] = ev;
+          g_event_count++;
+        }
+        continue;
+      }
+    }
     if (n < (int)sizeof(CameraPacket)) {
       continue;  // timeout, error, or runt packet
     }
@@ -207,6 +235,22 @@ u64 goal_get_camera(u32 dst) {
   out[10] = g_latest.strafe;
   out[11] = (float)g_latest.buttons;
   return 1;
+}
+
+u64 goal_pop_event(u32 dst) {
+  float* out = Ptr<float>(dst).c();
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (g_event_count == 0) {
+    return 0;
+  }
+  const EventPacket& ev = g_events[g_event_head];
+  for (int i = 0; i < 5; i++) {
+    out[i] = ev.data[i];
+  }
+  u64 type = ev.event;
+  g_event_head = (g_event_head + 1) % kMaxQueuedEvents;
+  g_event_count--;
+  return type;
 }
 
 bool steve_mode_active() {

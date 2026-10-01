@@ -18,6 +18,9 @@ public final class BridgeSocket implements AutoCloseable {
     public static final short VERSION = 1;
     public static final short TYPE_CAMERA = 1;
     public static final short TYPE_JAK_STATE = 2;
+    public static final short TYPE_EVENT = 3;
+    public static final int EVENT_EXPLOSION = 1;
+    public static final int EVENT_PACKET_SIZE = 36;
     public static final int DEFAULT_PORT = 47800;
     public static final int CAMERA_PACKET_SIZE = 64;
     public static final int JAK_STATE_PACKET_SIZE = 44;
@@ -88,6 +91,15 @@ public final class BridgeSocket implements AutoCloseable {
         sendView.putFloat(strafe);
         sendView.putInt(buttons);
         socket.send(new DatagramPacket(sendBuf, CAMERA_PACKET_SIZE, host, port));
+    }
+
+    /** Send a gameplay event to Jak (see PROTOCOL.md, EVENT). Coordinates in Jak meters. */
+    public synchronized void sendEvent(int event, float x, float y, float z, float radius, float power)
+            throws IOException {
+        ByteBuffer b = ByteBuffer.allocate(EVENT_PACKET_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(MAGIC).putShort(VERSION).putShort(TYPE_EVENT).putInt(seq++).putInt(event);
+        b.putFloat(x).putFloat(y).putFloat(z).putFloat(radius).putFloat(power);
+        socket.send(new DatagramPacket(b.array(), EVENT_PACKET_SIZE, host, port));
     }
 
     public JakState latestJakState() {

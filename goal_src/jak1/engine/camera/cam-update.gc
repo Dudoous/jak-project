@@ -14,9 +14,9 @@
 ;; Once the camera's position and orientation has been calculated,
 ;; the camera and visibility outputs are updated in this file.
 
-;; Minecraft passthrough mod (pc/features/mc-passthrough.gc)
-(define-extern mc-passthrough-poll (function symbol))
-(define-extern mc-passthrough-apply! (function math-camera none))
+;; og:preserve-this Minecraft passthrough mod: set by pc/features/mc-passthrough.gc, which loads
+;; later. Returns #t if Minecraft drove the camera this frame. #f until that file is loaded.
+(define *mc-passthrough-camera-hook* (the-as (function math-camera symbol) #f))
 
 ;; DECOMP BEGINS
 
@@ -268,7 +268,7 @@
   (cond
     (*external-cam-mode* (move-camera-from-pad *math-camera*))
     ;; og:preserve-this Minecraft passthrough: Minecraft's first-person camera drives the view.
-    ((mc-passthrough-poll) (mc-passthrough-apply! *math-camera*))
+    ((and *mc-passthrough-camera-hook* (*mc-passthrough-camera-hook* *math-camera*)))
     ((nonzero? *camera-look-through-other*)
      (set! (-> *math-camera* fov) (-> *camera-other-fov* data))
      (set! (-> *math-camera* trans quad) (-> *camera-other-trans* quad))

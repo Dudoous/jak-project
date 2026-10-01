@@ -37,11 +37,13 @@ public final class CollisionPlacer {
     private volatile boolean steveActive = false;
     private boolean stepHeightApplied = false;
     private volatile double[] pendingSpawn; // Jak meters, feet
+    private volatile float pendingDamage = 0f;
+    private volatile String worldWarning = null;
+    private boolean checkedWorldHeight = false;
 
     public CollisionPlacer(JakCraftConfig config) {
         this.config = config;
-        Integer saved = config.yOffset();
-        if (saved != null) yOffset = saved;
+        this.yOffset = config.yOffset();
     }
 
     public int yOffset() {
@@ -72,16 +74,13 @@ public final class CollisionPlacer {
             try {
                 status = "loading Jak collision...";
                 CollisionVoxels v = CollisionVoxels.loadFolder(dir, name -> status = "loading " + name);
-                Integer saved = config.yOffset();
-                int off = saved != null ? saved : JakCraftConfig.chooseYOffset(v.minY());
-                if (saved == null) config.setYOffset(off);
-                yOffset = off;
-                voxels = v;
-                status = String.format("Jak collision ready: %d levels, %d triangles, %d blocks (y offset %d)",
-                        v.fileCount(), v.triangleCount(), v.voxelCount(), off);
-                if (v.maxY() + off > 318) {
-                    status += " - warning: tops above " + (318 - off) + " m are cut off";
+                if (v.triangleCount() == 0) {
+                    status = "no collision triangles in " + dir + " - run play.bat setup again";
+                    return;
                 }
+                voxels = v;
+                status = String.format("Jak collision ready: %d levels, %d triangles, %d blocks, height %.0f..%.0f m",
+                        v.fileCount(), v.triangleCount(), v.voxelCount(), v.minY(), v.maxY());
                 JakBridgeClient.LOG.info("{} in {} ms", status, (System.nanoTime() - t0) / 1_000_000);
             } catch (Exception e) {
                 status = "failed to load Jak collision: " + e;
@@ -99,12 +98,30 @@ public final class CollisionPlacer {
                 doneColumns.clear();
             }
             stepHeightApplied = false;
+            checkedWorldHeight = false;
+            worldWarning = null;
         });
     }
 
     /** Called from the client thread every tick. */
     public void setSteveActive(boolean active) {
         steveActive = active;
+    }
+
+    /** Warning about the current world (e.g. not tall enough for Jak's world), or null. */
+    public String worldWarning() {
+        return worldWarning;
+    }
+
+    /** Called from the client thread: Jak's enemies hit Steve for this many health points. */
+    public synchronized void addDamage(float hp) {
+        pendingDamage += hp;
+    }
+
+    private synchronized float takeDamage() {
+        float d = pendingDamage;
+        pendingDamage = 0f;
+        return d;
     }
 
     /** Called from the client thread when Jak starts a new STEVE activation. */
@@ -122,6 +139,26 @@ public final class CollisionPlacer {
         CollisionVoxels v = voxels;
         if (!steveActive || v == null) return;
 
+        if (!checkedWorldHeight) {
+            checkedWorldHeight = true;
+            int bottom = world.getBottomY();
+            int top = world.getTopY();
+            if (v.minY() + yOffset < bottom || v.maxY() + yOffset > top) {
+                worldWarning = String.format(
+                        "this world is only %d..%d blocks tall but Jak's world is %.0f..%.0f m - create a new world "
+                                + "with World Type \"JakCraft (Jak's world)\", or parts of Jak's ground will be missing",
+                        bottom, top, v.minY() + yOffset, v.maxY() + yOffset);
+                JakBridgeClient.LOG.warn(worldWarning);
+            } else {
+                worldWarning = null;
+            }
+        }
+
+        float damage = takeDamage();
+        if (damage > 0f && player.isAlive()) {
+            player.damage(player.getDamageSources().generic(), damage);
+        }
+
         BlockState state = config.visibleCollision()
                 ? Blocks.LIGHT_GRAY_STAINED_GLASS.getDefaultState()
                 : Blocks.BARRIER.getDefaultState();
@@ -137,7 +174,9 @@ public final class CollisionPlacer {
                     placeColumn(world, v, scx + dx, scz + dz, state, Integer.MAX_VALUE);
                 }
             }
-            player.requestTeleport(spawn[0], spawn[1] + yOffset + 0.05, spawn[2]);
+            BlockPos spawnPos = BlockPos.ofFloored(spawn[0], spawn[1] + yOffset + 0.6, spawn[2]);
+            world.setSpawnPos(spawnPos, 0f); // dying respawns you in Jak's world, not the void
+            player.requestTeleport(spawn[0], spawn[1] + yOffset + 0.6, spawn[2]);
             player.setVelocity(0, 0, 0);
             player.fallDistance = 0;
             return;

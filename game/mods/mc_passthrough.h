@@ -21,6 +21,8 @@ constexpr u32 kMagic = 0x4B4A434D;  // "MCJK"
 constexpr u16 kVersion = 1;
 constexpr u16 kTypeCamera = 1;    // Minecraft -> Jak
 constexpr u16 kTypeJakState = 2;  // Jak -> Minecraft
+constexpr u16 kTypeEvent = 3;     // Minecraft -> Jak, gameplay events (explosions, ...)
+constexpr u32 kEventExplosion = 1;
 constexpr int kDefaultPort = 47800;
 
 // CAMERA packet flags
@@ -57,10 +59,17 @@ u64 goal_get_camera(u32 dst);
 /*!
  * GOAL: (pc-mc-send-state src) -> int
  * Sends 8 floats from src to the last Minecraft client that sent us a packet:
- *   [0..2] x, y, z (Minecraft coordinates)   [3] yaw   [4] health   [5] flags   [6..7] reserved
+ *   see JAK_STATE in PROTOCOL.md (position, damage to Steve, health, flags, activation, water)
  * Returns 1 on success, 0 if no client is known yet.
  */
 u64 goal_send_state(u32 src);
+
+/*!
+ * GOAL: (pc-mc-pop-event dst) -> int
+ * Pops the oldest queued Minecraft event. Returns its type (0 = queue empty) and writes 5 floats:
+ *   explosion (1): x, y, z (Jak meters), radius (m), power
+ */
+u64 goal_pop_event(u32 dst);
 
 /// True while Minecraft is connected (fresh packets) and asking for STEVE mode.
 /// Safe to call from any thread.

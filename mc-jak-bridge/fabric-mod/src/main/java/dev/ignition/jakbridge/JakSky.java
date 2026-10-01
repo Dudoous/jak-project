@@ -115,6 +115,10 @@ public final class JakSky {
         RenderSystem.applyModelViewMatrix();
         RenderSystem.setProjectionMatrix(new Matrix4f(), VertexSorter.BY_Z);
 
+        // black bars instead of Minecraft's sky colour where Jak's picture doesn't reach
+        RenderSystem.clearColor(0f, 0f, 0f, 1f);
+        RenderSystem.clear(GL11.GL_COLOR_BUFFER_BIT, MinecraftClient.IS_SYSTEM_MAC);
+
         RenderSystem.disableDepthTest();
         RenderSystem.depthMask(false);
         RenderSystem.disableBlend();

@@ -6,6 +6,9 @@
 (require "engine/camera/cam-interface-h.gc")
 (require "engine/target/target-h.gc")
 (require "engine/ps2/pad.gc")
+(require "engine/target/target-handler.gc")
+(require "engine/common-obs/water.gc")
+(require "engine/common-obs/nav-enemy.gc")
 
 ;; Minecraft passthrough mod.
 ;;
@@ -37,6 +40,7 @@
 
 (define-extern pc-mc-get-camera (function (pointer float) int))
 (define-extern pc-mc-send-state (function (pointer float) int))
+(define-extern pc-mc-pop-event (function (pointer float) int))
 
 (defconstant MC_RAW_X 0)
 (defconstant MC_RAW_Y 1)
@@ -62,6 +66,12 @@
 (defconstant MC_BUTTON_ATTACK 8)
 (defconstant MC_BUTTON_USE 16)
 
+;; Minecraft -> Jak events (pc-mc-pop-event)
+(defconstant MC_EVENT_EXPLOSION 1)
+
+;; "no water here" in JAK_STATE data[7]
+(defconstant MC_NO_WATER -100000.0)
+
 ;; JAK_STATE flags
 (defconstant JAK_STATE_FLAG_BODY 1)
 (defconstant JAK_STATE_FLAG_STEVE 2)
@@ -79,6 +89,17 @@
    (yaw-offset   float)     ;; rotation units, set when anchoring (FREE / BODY)
    (activations  int32)
    (parked?      symbol)    ;; STEVE: Jak has been moved under Steve at least once this activation
+   (steve-damage float)     ;; STEVE: total Minecraft health points of damage dealt to Steve
+   (last-hit-time time-frame)
+   (last-attack-time time-frame)
+   (prev-buttons int32)
+   (melee-reach  float)     ;; STEVE: how far Steve's punch reaches (jak units)
+   (aspect-saved? symbol)   ;; STEVE: Jak's aspect settings were changed to match Minecraft
+   (saved-aspect-auto? symbol)
+   (saved-use-vis? symbol)
+   (saved-aspect-x int32)
+   (saved-aspect-y int32)
+   (event        float 5)
    (raw          float 12)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
    (out          float 8)   ;; JAK_STATE payload
    (anchor-mc    vector :inline)
@@ -98,11 +119,14 @@
        :debug? #f
        :timeout-ms 250.0
        :scale (meters 1.0)
-       :eye-height (meters 1.62)))
+       :eye-height (meters 1.62)
+       :melee-reach (meters 4.5)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-extern mc-restore-aspect! (function mc-passthrough-state none))
 
 (defun mc-yaw->jak-heading ((st mc-passthrough-state) (yaw-deg float))
   "Convert a Minecraft yaw (degrees) to a Jak heading (rotation units, as (atan x z))."
@@ -178,9 +202,150 @@
     (when (or (= (-> st mode) 'body) (= (-> st mode) 'steve))
       (mc-set-jak-hidden! #f))
     (if (and (= (-> st mode) 'steve) (mc-jak-grabbed?)) (send-event *target* 'end-mode))
+    (mc-restore-aspect! st)
     (format 0 "[mc-passthrough] camera returned to Jak~%"))
   (set! (-> st mode) #f)
   (none))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STEVE mode gameplay: aspect, fighting, getting hurt, water, explosions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun mc-restore-aspect! ((st mc-passthrough-state))
+  "Put Jak's aspect ratio settings back the way they were before STEVE mode."
+  (when (-> st aspect-saved?)
+    (cond
+      ((-> st saved-aspect-auto?) (set! (-> *pc-settings* aspect-ratio-auto?) #t))
+      (else (set-aspect! *pc-settings* (-> st saved-aspect-x) (-> st saved-aspect-y))))
+    (set! (-> *pc-settings* use-vis?) (-> st saved-use-vis?))
+    (set! (-> st aspect-saved?) #f))
+  (none))
+
+(defun mc-sync-aspect! ((st mc-passthrough-state))
+  "Render Jak's frame with the same shape as the Minecraft window, so the two line up.
+   Minecraft sends width/height * 1000 in the top 16 bits of the CAMERA flags."
+  (let ((mc-aspect-1000 (shr (the int (-> st raw MC_RAW_FLAGS)) 16)))
+    (when (and (< 500 mc-aspect-1000) (< mc-aspect-1000 5000))
+      (let ((want (* 0.001 (the float mc-aspect-1000))))
+        (when (or (not (-> st aspect-saved?)) (< 0.005 (fabs (- want (-> *pc-settings* aspect-ratio)))))
+          (when (not (-> st aspect-saved?))
+            (set! (-> st saved-aspect-auto?) (-> *pc-settings* aspect-ratio-auto?))
+            (set! (-> st saved-use-vis?) (-> *pc-settings* use-vis?))
+            (set! (-> st saved-aspect-x) (-> *pc-settings* aspect-custom-x))
+            (set! (-> st saved-aspect-y) (-> *pc-settings* aspect-custom-y))
+            (set! (-> st aspect-saved?) #t))
+          (set-aspect! *pc-settings* mc-aspect-1000 1000)))))
+  (none))
+
+(defun mc-enemy? ((p process))
+  "A living Jak enemy that can be killed."
+  (and (type-type? (-> p type) nav-enemy) (logtest? (-> p mask) (process-mask attackable))))
+
+(defun mc-kill-enemy! ((p process))
+  (format 0 "[mc-passthrough] Steve killed ~A~%" (-> p name))
+  (send-event p 'instant-death :from *target*)
+  (none))
+
+;; search state for iterate-process-tree (GOAL lambdas can't capture locals)
+(define *mc-search-origin* (new 'global 'vector))
+(define *mc-search-dir* (new 'global 'vector))
+(define *mc-search-reach* 0.0)
+(define *mc-search-best* (the-as process #f))
+(define *mc-search-best-dist* 0.0)
+
+(defun mc-steve-melee! ((st mc-passthrough-state))
+  "Left click in Minecraft: hit the closest enemy in front of Steve within reach."
+  (set! (-> *mc-search-origin* quad) (-> st pos quad))
+  (set! (-> *mc-search-dir* quad) (-> st fwd quad))
+  (set! *mc-search-reach* (-> st melee-reach))
+  (set! *mc-search-best* #f)
+  (set! *mc-search-best-dist* (-> st melee-reach))
+  (iterate-process-tree
+    *active-pool*
+    (lambda ((p process))
+      (when (mc-enemy? p)
+        (let ((to (new 'stack-no-clear 'vector)))
+          ;; aim at the enemy's middle, not its feet
+          (vector-! to (-> (the-as nav-enemy p) collide-info trans) *mc-search-origin*)
+          (+! (-> to y) (meters 0.8))
+          (let ((dist (vector-length to)))
+            (when (and (< dist *mc-search-best-dist*)
+                       ;; within ~40 degrees of where Steve looks (or touching him)
+                       (or (< dist (meters 1.5)) (< (* 0.75 dist) (vector-dot to *mc-search-dir*))))
+              (set! *mc-search-best* p)
+              (set! *mc-search-best-dist* dist)))))
+      #f)
+    *kernel-context*)
+  (if *mc-search-best* (mc-kill-enemy! *mc-search-best*))
+  (none))
+
+(defun mc-explode! ((x float) (y float) (z float) (radius float))
+  "A Minecraft explosion (TNT, creeper...) at Jak-space x y z: kill Jak enemies in range."
+  (set-vector! *mc-search-origin* x y z 1.0)
+  (set! *mc-search-reach* radius)
+  (iterate-process-tree
+    *active-pool*
+    (lambda ((p process))
+      (if (and (mc-enemy? p)
+               (< (vector-vector-distance (-> (the-as nav-enemy p) collide-info trans) *mc-search-origin*) *mc-search-reach*))
+        (mc-kill-enemy! p))
+      #f)
+    *kernel-context*)
+  (none))
+
+(defun mc-process-events! ((st mc-passthrough-state))
+  "Handle everything Minecraft sent since last frame."
+  (let ((type (pc-mc-pop-event (&-> st event 0)))
+        (guard 0))
+    (while (and (nonzero? type) (< guard 64))
+      (when (= type MC_EVENT_EXPLOSION)
+        (mc-explode! (* (-> st scale) (-> st event 0))
+                     (* (-> st scale) (-> st event 1))
+                     (* (-> st scale) (-> st event 2))
+                     (* (-> st scale) (fmax 2.0 (-> st event 3)))))
+      (+! guard 1)
+      (set! type (pc-mc-pop-event (&-> st event 0)))))
+  (none))
+
+(defun mc-steve-attacked ((msg symbol) (info attack-info))
+  "Hook from target-attacked: in STEVE mode, attacks on the hidden Jak hurt Steve instead.
+   Returns #t if the attack was taken by Steve."
+  (let ((st *mc-passthrough*))
+    (cond
+      ((!= (-> st mode) 'steve) #f)
+      (else
+       ;; one hit per 0.75 s: enemies keep "touching" Jak while they overlap him
+       (when (time-elapsed? (-> st last-hit-time) (seconds 0.75))
+         (set-time! (-> st last-hit-time))
+         (let ((mode (if (logtest? (-> info mask) (attack-mask mode)) (-> info mode) 'generic)))
+           (+! (-> st steve-damage)
+               (case mode
+                 (('deadly 'lava 'darkeco 'dark-eco-pool 'melt 'drown-death 'endlessfall 'death 'tar 'ogreboss-super-boulder) 100.0)
+                 (else 4.0)))
+           (format 0 "[mc-passthrough] Steve hit by ~A (~A), total damage ~,,1f~%" mode msg (-> st steve-damage))))
+       #t))))
+
+(defun mc-water-surface ((st mc-passthrough-state))
+  "Height of the Jak water Steve is in (Jak meters), or MC_NO_WATER."
+  (if (and *target* (logtest? (-> *target* water flag) (water-flag active)))
+    (/ (-> *target* water base-height) (-> st scale))
+    MC_NO_WATER))
+
+(defun mc-passthrough-steve-gameplay! ((st mc-passthrough-state))
+  "STEVE mode, every frame."
+  (mc-sync-aspect! st)
+  (mc-process-events! st)
+  (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
+    ;; punch on click, and keep punching every 0.35 s while held
+    (when (and (logtest? buttons MC_BUTTON_ATTACK)
+               (or (not (logtest? (-> st prev-buttons) MC_BUTTON_ATTACK))
+                   (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
+      (set-time! (-> st last-attack-time))
+      (mc-steve-melee! st))
+    (set! (-> st prev-buttons) buttons))
+  (none))
+
+(set! *mc-passthrough-attack-hook* mc-steve-attacked)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; controller injection (BODY mode, called from service-cpads)
@@ -344,16 +509,18 @@
     (set! (-> st out 0) 0.0)
     (set! (-> st out 1) 0.0)
     (set! (-> st out 2) 0.0)
-    (set! (-> st out 3) (-> st raw MC_RAW_YAW))
+    (set! (-> st out 3) (-> st steve-damage))
     (set! (-> st out 4) (if *target* (-> *target* fact health) 0.0))
     (set! (-> st out 5) 0.0)
     (set! (-> st out 6) (the float (-> st activations)))
-    (set! (-> st out 7) 0.0)
+    (set! (-> st out 7) MC_NO_WATER)
     (case (-> st mode)
       (('steve)
        (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
        (mc-passthrough-steve-park-jak! st)
-       (mc-passthrough-steve-state! st))
+       (mc-passthrough-steve-gameplay! st)
+       (mc-passthrough-steve-state! st)
+       (set! (-> st out 7) (mc-water-surface st)))
       (('body)
        (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
        (mc-passthrough-body-state! st)))
@@ -368,6 +535,14 @@
       (format *stdcon* "input fwd ~,,2f strafe ~,,2f buttons ~D~%" (-> st raw MC_RAW_FORWARD) (-> st raw MC_RAW_STRAFE) (the int (-> st raw MC_RAW_BUTTONS)))
       (format *stdcon* "cam ~,,2M ~,,2M ~,,2M~%" (-> st pos x) (-> st pos y) (-> st pos z))))
   (none))
+
+(defun mc-passthrough-camera! ((mcam math-camera))
+  "Hook called from update-camera. Returns #t if Minecraft drove the camera this frame."
+  (cond
+    ((mc-passthrough-poll) (mc-passthrough-apply! mcam) #t)
+    (else #f)))
+
+(set! *mc-passthrough-camera-hook* mc-passthrough-camera!)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; REPL helpers

@@ -2,5 +2,6 @@
   "key.jakbridge.toggle": "Toggle Jak bridge",
   "category.jakbridge": "Jak Bridge",
   "key.jakbridge.mode": "Cycle STEVE / BODY / FREE mode",
-  "key.jakbridge.respawn": "Go back to where Jak was"
+  "key.jakbridge.respawn": "Go back to where Jak was",
+  "generator.jakbridge.jakcraft": "JakCraft (Jak's world)"
 }

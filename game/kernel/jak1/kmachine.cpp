@@ -562,6 +562,7 @@ void InitMachine_PCPort() {
   // Minecraft passthrough mod: UDP bridge to the companion Fabric mod.
   make_function_symbol_from_c("pc-mc-get-camera", (void*)mc_passthrough::goal_get_camera);
   make_function_symbol_from_c("pc-mc-send-state", (void*)mc_passthrough::goal_send_state);
+  make_function_symbol_from_c("pc-mc-pop-event", (void*)mc_passthrough::goal_pop_event);
   mc_passthrough::start();
 
   // setup string constants

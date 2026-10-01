@@ -17,14 +17,14 @@ ignored.
 |-------:|------|---------|-------|
 | 0      | u32  | magic   | `0x4B4A434D` (bytes `M C J K`) |
 | 4      | u16  | version | `1` |
-| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE |
+| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT |
 | 8      | u32  | seq     | incrementing per sender |
 
 ## CAMERA (type 1, Minecraft → Jak, 64 bytes, sent every rendered frame)
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested, bit 3 STEVE mode requested |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested, bit 3 STEVE mode requested, bits 16–31 STEVE: Minecraft window width/height × 1000 |
 | 16     | f64  | x       | camera (eye) position, blocks. In STEVE mode: Jak meters (Minecraft Y minus `y_offset`) |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
@@ -47,16 +47,25 @@ The runtime considers Minecraft "connected" while the newest CAMERA packet is yo
 | data | BODY mode (flags bit 0) | STEVE mode (flags bit 1) |
 |------|-------------------------|--------------------------|
 | `[0..2]` | where Steve's **eyes** should be (Minecraft coordinates) | where Jak stood when STEVE mode started (Jak meters, feet) |
-| `[3]` | yaw echo | yaw echo |
+| `[3]` | — | total damage Jak's enemies dealt to Steve (Minecraft health points, only grows) |
 | `[4]` | Jak health | Jak health |
 | `[5]` | flags | flags |
 | `[6]` | activation id | activation id — changes each time a mode starts; Minecraft teleports Steve to `[0..2]` once per id |
-| `[7]` | reserved | reserved |
+| `[7]` | — | Jak water surface at Steve (Jak meters), below −50000 = no water |
 
 Sent every frame from GOAL with `(pc-mc-send-state ptr)` while Minecraft drives the camera.
 In BODY mode the Fabric mod teleports the player to `[0..2]` each tick and zeroes Steve's own
 movement. In STEVE mode Minecraft is in charge; Jak only reports where to start. If no JAK_STATE
 arrives for 500 ms, Minecraft behaves normally.
+
+## EVENT (type 3, Minecraft → Jak, 36 bytes)
+
+| Offset | Type | Field | Notes |
+|-------:|------|-------|-------|
+| 12 | u32 | event | `1` = explosion |
+| 16 | f32[5] | data | explosion: x, y, z (Jak meters), radius (m), power |
+
+Queued by the runtime (up to 64) and handled by GOAL each frame with `(pc-mc-pop-event ptr)`.
 
 ## Implementations
 

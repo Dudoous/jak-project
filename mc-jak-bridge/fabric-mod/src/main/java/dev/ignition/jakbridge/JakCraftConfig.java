@@ -14,7 +14,8 @@ import java.util.Properties;
  *
  *   jakcraft_dir       folder with play.bat (auto-detected from %APPDATA%\JakCraft\location.txt,
  *                      which play.bat writes)
- *   y_offset           Minecraft Y = Jak meters Y + y_offset (computed once from the collision)
+ *   jak_y_offset       Minecraft Y = Jak meters Y + jak_y_offset (default 0; the JakCraft world type
+ *                      is 4064 blocks tall, so all of Jak's world fits without an offset)
  *   visible_collision  true = glass instead of invisible barriers (to check alignment)
  *   collision_radius   chunks around the player that get collision blocks (default 8)
  */
@@ -88,19 +89,14 @@ public final class JakCraftConfig {
         return null;
     }
 
-    public Integer yOffset() {
-        String v = props.getProperty("y_offset");
-        if (v == null) return null;
+    public int yOffset() {
+        String v = props.getProperty("jak_y_offset");
+        if (v == null) return 0;
         try {
             return Integer.parseInt(v.trim());
         } catch (NumberFormatException e) {
-            return null;
+            return 0;
         }
-    }
-
-    public void setYOffset(int offset) {
-        props.setProperty("y_offset", Integer.toString(offset));
-        save();
     }
 
     public boolean visibleCollision() {
@@ -115,13 +111,4 @@ public final class JakCraftConfig {
         }
     }
 
-    /**
-     * Pick a Y offset that puts Jak's lowest collision just above Minecraft's world bottom (-64),
-     * and keeps 0 if Jak's world already fits.
-     */
-    public static int chooseYOffset(double jakMinY) {
-        int bottom = -60;
-        if (Double.isInfinite(jakMinY) || jakMinY >= bottom) return 0;
-        return (int) Math.ceil(bottom - jakMinY);
-    }
 }

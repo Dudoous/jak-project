@@ -1,6 +1,12 @@
 package dev.ignition.jakbridge;
 
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
+import net.minecraft.block.Blocks;
+import net.minecraft.client.gl.Framebuffer;
+import net.minecraft.util.ActionResult;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -69,6 +75,8 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static int lastSpawnActivation = -1;
     private static boolean toldStatus = false;
     private static String lastStatusShown = "";
+    private static String lastWarningShown = null;
+    private static float lastJakDamage = -1f;
 
     public static Mode mode() {
         return mode;
@@ -109,6 +117,19 @@ public final class JakBridgeClient implements ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register(JakBridgeClient::onEndTick);
 
+        // Jak's ground is barrier blocks: don't let a left click (creative) knock holes in it.
+        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) ->
+                mode == Mode.STEVE && world.getBlockState(pos).isOf(Blocks.BARRIER)
+                        ? ActionResult.FAIL : ActionResult.PASS);
+
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
+                dispatcher.register(ClientCommandManager.literal("jakcraft").executes(ctx -> {
+                    for (String line : statusLines(MinecraftClient.getInstance())) {
+                        ctx.getSource().sendFeedback(Text.literal(line));
+                    }
+                    return 1;
+                })));
+
         // Per-frame, after the world is rendered, so the camera is the interpolated one we saw.
         WorldRenderEvents.END.register(context -> sendFrame(context.camera()));
 
@@ -132,6 +153,35 @@ public final class JakBridgeClient implements ClientModInitializer {
             return null;
         }
         return state;
+    }
+
+    /** /jakcraft: everything needed to tell what's wrong. */
+    private static java.util.List<String> statusLines(MinecraftClient client) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        out.add("[JakCraft] mode " + mode + (streaming ? "" : " (bridge OFF - press F8)"));
+        BridgeSocket.JakState any = bridge == null ? null : bridge.latestJakState();
+        boolean jakTalking = any != null && System.nanoTime() - any.receivedNanos < JAK_STATE_TIMEOUT_NANOS;
+        out.add("Jak game: " + (jakTalking ? "connected" : "NOT connected - start play.bat and load your save"));
+        out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving"));
+        out.add("JakCraft folder: " + (config.jakcraftDir() == null ? "unknown (run play.bat once)" : config.jakcraftDir()));
+        out.add("Collision: " + collision.status());
+        if (collision.worldWarning() != null) out.add("World: " + collision.worldWarning());
+        if (client.player != null) {
+            out.add(String.format("Steve at %.1f %.1f %.1f (Jak meters), Jak water surface %s",
+                    client.player.getX(), client.player.getY() - collision.yOffset(), client.player.getZ(),
+                    Double.isNaN(JakWater.surface()) ? "none" : String.format("%.1f", JakWater.surface())));
+        }
+        return out;
+    }
+
+    /** Called from ExplosionMixin on the server thread. */
+    public static void onExplosion(double x, double y, double z) {
+        if (bridge == null || !streaming || mode != Mode.STEVE) return;
+        try {
+            bridge.sendEvent(BridgeSocket.EVENT_EXPLOSION, (float) x, (float) (y - collision.yOffset()), (float) z, 6f, 4f);
+        } catch (IOException e) {
+            LOG.warn("Could not send explosion to Jak: {}", e.toString());
+        }
     }
 
     /** Used by KeyboardInputMixin: in BODY mode Jak drives the body, Steve must not walk by himself. */
@@ -170,10 +220,31 @@ public final class JakBridgeClient implements ClientModInitializer {
             say(client, "Back to where Jak was standing");
         }
 
+        String warning = collision.worldWarning();
+        if (warning != null && !warning.equals(lastWarningShown)) {
+            player.sendMessage(Text.literal("[JakCraft] " + warning), false);
+        }
+        lastWarningShown = warning;
+
         boolean steve = streaming && mode == Mode.STEVE && freshState(BridgeSocket.JAK_FLAG_STEVE) != null;
         collision.setSteveActive(steve);
+        if (!steve) {
+            JakWater.clear();
+        }
         if (steve) {
             BridgeSocket.JakState s = freshState(BridgeSocket.JAK_FLAG_STEVE);
+            // data[3]: total damage Jak's enemies have done to Steve (Minecraft health points)
+            float jakDamage = s.data[3];
+            if (lastJakDamage >= 0f && jakDamage > lastJakDamage) {
+                collision.addDamage(jakDamage - lastJakDamage);
+            }
+            lastJakDamage = jakDamage;
+            // data[7]: Jak's water surface here (Jak meters), or very negative for none
+            if (s.data[7] > -50000f) {
+                JakWater.setSurface(s.data[7] + collision.yOffset());
+            } else {
+                JakWater.clear();
+            }
             int activation = (int) s.data[6];
             if (activation != lastSpawnActivation && collision.loaded()) {
                 // Jak just handed over: put Steve where Jak was standing.
@@ -246,7 +317,15 @@ public final class JakBridgeClient implements ClientModInitializer {
             buttons = 0;
         }
         if (mode == Mode.BODY) flags |= BridgeSocket.FLAG_BODY_MODE;
-        if (mode == Mode.STEVE) flags |= BridgeSocket.FLAG_STEVE_MODE;
+        if (mode == Mode.STEVE) {
+            flags |= BridgeSocket.FLAG_STEVE_MODE;
+            // window shape (width/height * 1000) in the top 16 bits: Jak renders the same shape
+            Framebuffer fb = client.getFramebuffer();
+            if (fb != null && fb.textureHeight > 0) {
+                int aspect1000 = Math.round(1000f * fb.textureWidth / fb.textureHeight);
+                flags |= (Math.max(0, Math.min(0xffff, aspect1000)) << 16);
+            }
+        }
 
         try {
             bridge.sendCamera(x, y, z, yaw, pitch, vfov, forward, strafe, buttons, flags);
