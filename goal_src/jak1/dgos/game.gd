@@ -333,9 +333,9 @@
   "rigid-body.o"
   "nav-enemy-h.o"
   "nav-enemy.o"
-  "mc-passthrough.o" ;; added (after everything it hooks into)
   "baseplat.o"
   "basebutton.o"
+  "mc-passthrough.o" ;; added (after everything it hooks into)
   "tippy.o"
   "joint-exploder.o"
   "babak.o"

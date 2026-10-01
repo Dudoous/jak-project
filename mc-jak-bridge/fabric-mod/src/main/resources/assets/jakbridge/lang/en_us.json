@@ -2,5 +2,13 @@
   "key.jakbridge.toggle": "Toggle Jak bridge",
   "category.jakbridge": "Jak Bridge",
   "key.jakbridge.respawn": "Go back to where Jak was",
-  "generator.jakbridge.jakcraft": "JakCraft (Jak's world)"
+  "generator.jakbridge.jakcraft": "JakCraft (Jak's world)",
+  "key.jakbridge.view_sync": "Locked / fast view (Jak's picture sync)",
+  "key.jakbridge.jak_circle": "Jak: talk / use (circle)",
+  "key.jakbridge.jak_x": "Jak: yes / confirm (X)",
+  "key.jakbridge.jak_triangle": "Jak: no / back (triangle)",
+  "key.jakbridge.jak_left": "Jak: left (d-pad)",
+  "key.jakbridge.jak_right": "Jak: right (d-pad)",
+  "key.jakbridge.jak_up": "Jak: up (d-pad)",
+  "key.jakbridge.jak_down": "Jak: down (d-pad)"
 }

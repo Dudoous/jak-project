@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.loader.api.FabricLoader;
@@ -15,7 +16,6 @@ import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.GameOptions;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.render.Camera;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
@@ -40,9 +40,14 @@ import java.util.List;
  *    behind Jak's walls (JakDepthProxy).
  *  - Blocks you place are sent to Jak: his enemies have to walk around them, and lava / fire /
  *    cactus kill them. Punching and TNT kill them too; they hurt you back.
- *  - Jak and Daxter themselves are hidden and frozen; there is no Jak gameplay.
+ *  - Jak and Daxter themselves are hidden and can't move by themselves; there is no Jak gameplay.
+ *    Steve collects Jak's pickups (power cells, scout flies, orbs, eco) by walking into them.
+ *  - View locking: Minecraft draws its world from the exact pose Jak's newest picture was taken
+ *    from (CameraMixin), so the two pictures never slide against each other.
+ *  - A few keys are Jak's buttons, for people and warp gates: R = circle, Enter = X,
+ *    Backspace = triangle, arrow keys = d-pad.
  *
- * F8 turns the bridge on/off, F7 puts Steve back where Jak was standing.
+ * F8 turns the bridge on/off, F7 puts Steve back where Jak was standing, F6 locked/fast view.
  * Target: Minecraft 1.21.1, Yarn mappings.
  */
 public final class JakBridgeClient implements ClientModInitializer {
@@ -57,8 +62,24 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static CollisionPlacer collision;
     private static volatile boolean streaming = true;
     private static volatile boolean inJakWorld = false;
+    /** Don't lock the view to a Jak picture that is older than this (Jak stalled, loading...). */
+    private static final long MAX_LOCK_DELAY_NANOS = 300_000_000L;
+
     private static KeyBinding toggleKey;
     private static KeyBinding respawnKey;
+    private static KeyBinding viewKey;
+    private static final KeyBinding[] jakKeys = new KeyBinding[7];
+    private static final int[] jakKeyBits = {
+            BridgeSocket.BUTTON_JAK_CIRCLE, BridgeSocket.BUTTON_JAK_X, BridgeSocket.BUTTON_JAK_TRIANGLE,
+            BridgeSocket.BUTTON_JAK_LEFT, BridgeSocket.BUTTON_JAK_RIGHT, BridgeSocket.BUTTON_JAK_UP,
+            BridgeSocket.BUTTON_JAK_DOWN};
+    private static volatile boolean cutscene = false;
+    private static boolean viewLocked = true;
+    private static boolean cameraSentThisFrame = false;
+    /** When each CAMERA packet was sent, by sequence number (to measure how far behind Jak is). */
+    private static final int[] sentSeq = new int[1024];
+    private static final long[] sentNanos = new long[1024];
+    private static volatile float jakDelayMs = -1f;
     private static long lastErrorLogNanos = 0;
     private static int lastSpawnActivation = -1;
     private static String lastStatusShown = "";
@@ -81,6 +102,11 @@ public final class JakBridgeClient implements ClientModInitializer {
     /** Jak is connected and has handed his world over to Minecraft right now. */
     public static boolean inJakWorld() {
         return inJakWorld;
+    }
+
+    /** A cutscene is playing in Jak (Jak's own camera): show his picture full screen. */
+    public static boolean cutscene() {
+        return cutscene && inJakWorld;
     }
 
     @Override
@@ -113,11 +139,33 @@ public final class JakBridgeClient implements ClientModInitializer {
                 "key.jakbridge.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "category.jakbridge"));
         respawnKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.jakbridge.respawn", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F7, "category.jakbridge"));
+        viewKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.jakbridge.view_sync", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F6, "category.jakbridge"));
+        String[] jakKeyNames = {"jak_circle", "jak_x", "jak_triangle", "jak_left", "jak_right", "jak_up", "jak_down"};
+        int[] jakKeyDefaults = {GLFW.GLFW_KEY_R, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_BACKSPACE, GLFW.GLFW_KEY_LEFT,
+                GLFW.GLFW_KEY_RIGHT, GLFW.GLFW_KEY_UP, GLFW.GLFW_KEY_DOWN};
+        for (int i = 0; i < jakKeys.length; i++) {
+            jakKeys[i] = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                    "key.jakbridge." + jakKeyNames[i], InputUtil.Type.KEYSYM, jakKeyDefaults[i], "category.jakbridge"));
+        }
+        viewLocked = config.viewLocked();
 
         ClientTickEvents.END_CLIENT_TICK.register(JakBridgeClient::onEndTick);
-        WorldRenderEvents.START.register(JakDepthProxy::rememberMatrices);
-        // Per-frame, after the world is rendered, so the camera is the interpolated one we saw.
-        WorldRenderEvents.END.register(context -> sendFrame(context.camera()));
+        WorldRenderEvents.START.register(context -> {
+            if (!cameraSentThisFrame) {
+                // CameraMixin didn't run (renamed in this Minecraft version?): send from here
+                sendCamera(context.camera().getPos(), context.camera().getYaw(), context.camera().getPitch());
+                JakSky.latch();
+            }
+            JakDepthProxy.rememberMatrices(context);
+        });
+        WorldRenderEvents.END.register(context -> cameraSentThisFrame = false);
+        HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
+            if (cutscene()) {
+                drawContext.draw(); // flush the HUD first so the cutscene covers it
+                JakSky.drawCutscene();
+            }
+        });
 
         // Jak's ground is barrier blocks: don't let a left click (creative) knock holes in it.
         AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) ->
@@ -154,6 +202,26 @@ public final class JakBridgeClient implements ClientModInitializer {
         return state;
     }
 
+    /**
+     * Called by CameraMixin each rendered frame with Minecraft's live camera: send it to Jak, take
+     * Jak's newest picture, and return the pose (Minecraft coordinates) Minecraft should draw its
+     * world from to match that picture, or null to keep the live camera.
+     */
+    public static JakSky.Pose onCameraUpdate(Vec3d pos, float yaw, float pitch) {
+        cameraSentThisFrame = true;
+        sendCamera(pos, yaw, pitch);
+        JakSky.latch();
+        if (!viewLocked || !streaming || !inJakWorld || cutscene) return null;
+        JakSky.Pose p = JakSky.framePose();
+        if (p == null) return null;
+        int slot = p.seq & (sentSeq.length - 1);
+        if (sentSeq[slot] != p.seq || sentNanos[slot] == 0) return null;
+        long delay = System.nanoTime() - sentNanos[slot];
+        jakDelayMs = delay / 1_000_000f;
+        if (delay > MAX_LOCK_DELAY_NANOS) return null;
+        return new JakSky.Pose(p.seq, p.x, p.y + collision.yOffset(), p.z, p.yaw, p.pitch);
+    }
+
     /** /jakcraft: everything needed to tell what's wrong. */
     private static List<String> statusLines(MinecraftClient client) {
         List<String> out = new ArrayList<>();
@@ -161,7 +229,9 @@ public final class JakBridgeClient implements ClientModInitializer {
         BridgeSocket.JakState any = bridge == null ? null : bridge.latestJakState();
         boolean jakTalking = any != null && System.nanoTime() - any.receivedNanos < JAK_STATE_TIMEOUT_NANOS;
         out.add("Jak game: " + (jakTalking ? "connected" : "NOT connected - start play.bat and load your save"));
-        out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving"));
+        out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving")
+                + (jakDelayMs >= 0 ? String.format(", %.0f ms behind your mouse", jakDelayMs) : ""));
+        out.add("View: " + (viewLocked ? "locked to Jak's picture (F6 for fast)" : "fast, not locked (F6 to lock)"));
         out.add("JakCraft folder: " + (config.jakcraftDir() == null ? "unknown (run play.bat once)" : config.jakcraftDir()));
         out.add("Collision: " + collision.status());
         if (collision.worldWarning() != null) out.add("World: " + collision.worldWarning());
@@ -205,6 +275,12 @@ public final class JakBridgeClient implements ClientModInitializer {
             player.sendMessage(Text.literal("[JakCraft] " + status), !finalResult);
             lastStatusShown = status;
         }
+        while (viewKey.wasPressed()) {
+            viewLocked = !viewLocked;
+            config.setViewLocked(viewLocked);
+            say(client, viewLocked ? "View locked to Jak's picture (nothing slides, a little mouse delay)"
+                    : "Fast view (no mouse delay, Jak's world trails a little)");
+        }
         while (respawnKey.wasPressed()) {
             lastSpawnActivation = -1; // next state puts Steve back where Jak started
             say(client, "Back to where Jak was standing");
@@ -218,6 +294,7 @@ public final class JakBridgeClient implements ClientModInitializer {
 
         BridgeSocket.JakState s = streaming ? freshState() : null;
         inJakWorld = s != null;
+        cutscene = s != null && (((int) s.data[5]) & BridgeSocket.JAK_FLAG_CUTSCENE) != 0;
         collision.setSteveActive(inJakWorld);
         if (s == null) {
             JakWater.clear();
@@ -249,18 +326,17 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
     }
 
-    private static void sendFrame(Camera camera) {
+    /** Send Minecraft's live camera to Jak (eye position, look direction, FOV, keys). */
+    private static void sendCamera(Vec3d pos, float yawDeg, float pitchDeg) {
         MinecraftClient client = MinecraftClient.getInstance();
-        if (!streaming || bridge == null || client.player == null || camera == null) {
+        if (!streaming || bridge == null || client.player == null || pos == null) {
             return;
         }
 
-        Vec3d pos = camera.getPos();
         double x = pos.x;
         double y = pos.y - collision.yOffset(); // packets carry Jak-space meters
         double z = pos.z;
-        float yaw = MathHelper.wrapDegrees(camera.getYaw());
-        float pitch = camera.getPitch();
+        float yaw = MathHelper.wrapDegrees(yawDeg);
         GameOptions options = client.options;
         // Base FOV only. Set "FOV Effects" to 0% so sprinting/potions don't desync the two views.
         float vfov = options.getFov().getValue().floatValue();
@@ -272,6 +348,9 @@ public final class JakBridgeClient implements ClientModInitializer {
             if (options.sprintKey.isPressed()) buttons |= BridgeSocket.BUTTON_SPRINT;
             if (options.attackKey.isPressed()) buttons |= BridgeSocket.BUTTON_ATTACK;
             if (options.useKey.isPressed()) buttons |= BridgeSocket.BUTTON_USE;
+            for (int i = 0; i < jakKeys.length; i++) {
+                if (jakKeys[i] != null && jakKeys[i].isPressed()) buttons |= jakKeyBits[i];
+            }
         }
 
         int flags = BridgeSocket.FLAG_IN_WORLD | BridgeSocket.FLAG_STEVE_MODE;
@@ -284,7 +363,10 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
 
         try {
-            bridge.sendCamera(x, y, z, yaw, pitch, vfov, 0f, 0f, buttons, flags);
+            int seq = bridge.sendCamera(x, y, z, yaw, pitchDeg, vfov, 0f, 0f, buttons, flags);
+            int slot = seq & (sentSeq.length - 1);
+            sentSeq[slot] = seq;
+            sentNanos[slot] = System.nanoTime();
         } catch (IOException e) {
             long now = System.nanoTime();
             if (now - lastErrorLogNanos > 5_000_000_000L) { // don't spam the log every frame

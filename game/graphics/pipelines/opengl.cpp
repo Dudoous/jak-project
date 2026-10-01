@@ -25,6 +25,7 @@
 #include "game/graphics/opengl_renderer/debug_gui.h"
 #include "game/graphics/screenshot.h"
 #include "game/graphics/texture/TexturePool.h"
+#include "game/mods/mc_passthrough.h"
 #include "game/runtime.h"
 #include "game/sce/libscf.h"
 #include "game/system/hid/input_manager.h"
@@ -799,6 +800,8 @@ void gl_send_chain(const void* data, u32 offset) {
     // may be easy.
 
     g_gfx_data->dma_copier.set_input_data(data, offset, run_dma_copy);
+    // Minecraft passthrough: remember which Minecraft camera pose this frame was built with
+    mc_passthrough::on_chain_sent();
 
     g_gfx_data->has_data_to_render = true;
     g_gfx_data->dma_cv.notify_all();

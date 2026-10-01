@@ -83,6 +83,28 @@ u64 goal_pop_event(u32 dst);
  */
 u64 goal_get_blocks(u32 dst, u32 max);
 
+/*!
+ * GOAL: (pc-mc-pose-used) -> int
+ * Call after putting Jak's camera at the pose last read with pc-mc-get-camera. The frame being
+ * built is then tagged with that pose when it reaches the renderer, and the pose is written into
+ * the shared frame header, so Minecraft can draw its world from exactly where Jak's picture was
+ * taken (no lag between the two pictures).
+ */
+u64 goal_pose_used();
+
+/// The camera pose a frame was built with (Jak meters, Minecraft angles).
+struct FramePose {
+  u32 valid = 0;
+  u32 seq = 0;  // CAMERA packet sequence number
+  float x = 0, y = 0, z = 0, yaw = 0, pitch = 0, vfov = 0;
+};
+
+/// Game thread, when a frame's DMA chain is handed to the renderer: that frame used this pose.
+void on_chain_sent();
+
+/// Render thread: the pose of the frame being rendered right now.
+FramePose rendered_pose();
+
 /// True while Minecraft is connected (fresh packets) and playing in Jak's world.
 /// Safe to call from any thread.
 bool steve_mode_active();

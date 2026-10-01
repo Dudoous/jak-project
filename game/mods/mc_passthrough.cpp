@@ -109,6 +109,11 @@ sockaddr_in g_client{};
 bool g_have_client = false;
 u32 g_send_seq = 0;
 
+// camera pose bookkeeping (see goal_pose_used)
+FramePose g_last_read;   // last packet GOAL read with pc-mc-get-camera
+FramePose g_pending;     // pose of the frame GOAL is building
+FramePose g_chain_pose;  // pose of the frame handed to the renderer
+
 std::atomic<bool> g_running{false};
 sock_t g_sock = kBadSock;
 
@@ -258,6 +263,14 @@ u64 goal_get_camera(u32 dst) {
   out[9] = g_latest.forward;
   out[10] = g_latest.strafe;
   out[11] = (float)g_latest.buttons;
+  g_last_read.valid = 1;
+  g_last_read.seq = g_latest.seq;
+  g_last_read.x = out[0];
+  g_last_read.y = out[1];
+  g_last_read.z = out[2];
+  g_last_read.yaw = out[3];
+  g_last_read.pitch = out[4];
+  g_last_read.vfov = out[5];
   return 1;
 }
 
@@ -286,6 +299,23 @@ u64 goal_get_blocks(u32 dst, u32 max) {
   }
   memcpy(out, g_blocks, (size_t)n * 16);
   return (u64)n;
+}
+
+u64 goal_pose_used() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  g_pending = g_last_read;
+  return g_pending.valid;
+}
+
+void on_chain_sent() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  g_chain_pose = g_pending;
+  g_pending.valid = 0;  // a frame where GOAL didn't drive the camera has no Minecraft pose
+}
+
+FramePose rendered_pose() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  return g_chain_pose;
 }
 
 bool steve_mode_active() {

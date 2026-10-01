@@ -15,8 +15,9 @@ import java.nio.file.StandardOpenOption;
  * Reads the frames Jak shares through a memory-mapped file (written by
  * game/mods/mc_frame_share.cpp in OpenGOAL). No Minecraft dependencies.
  *
- * Layout: 64-byte header (magic 'JKFR', version, seq, width, height, format, frames written) then
- * RGBA8 pixels, bottom row first. seq is odd while Jak is writing a frame.
+ * Layout: 64-byte header (magic 'JKFR', version, seq, width, height, format, frames written, the
+ * camera pose the frame was rendered from) then RGBA8 pixels, bottom row first. seq is odd while
+ * Jak is writing a frame. See FRAME_SHARING.md.
  */
 public final class FrameReader implements AutoCloseable {
     public static final int MAGIC = 0x52464B4A; // "JKFR" little-endian
@@ -55,6 +56,10 @@ public final class FrameReader implements AutoCloseable {
         public int height;
         /** RGBA8 pixels, bottom row first, exactly width*height*4 bytes. Read-only view. */
         public ByteBuffer pixels;
+        /** The Minecraft camera this frame was rendered from (Jak meters, Minecraft degrees). */
+        public boolean poseValid;
+        public int poseSeq;
+        public float x, y, z, yaw, pitch, vfov;
     }
 
     private boolean ensureOpen() {
@@ -114,6 +119,19 @@ public final class FrameReader implements AutoCloseable {
         f.width = w;
         f.height = h;
         f.pixels = map.slice(HEADER_SIZE, w * h * 4).order(ByteOrder.LITTLE_ENDIAN);
+        f.poseValid = map.getInt(28) != 0;
+        f.poseSeq = map.getInt(32);
+        f.x = map.getFloat(36);
+        f.y = map.getFloat(40);
+        f.z = map.getFloat(44);
+        f.yaw = map.getFloat(48);
+        f.pitch = map.getFloat(52);
+        f.vfov = map.getFloat(56);
+        // Jak started the next frame while we read the header: try again next time
+        VarHandle.acquireFence();
+        if (map.getInt(8) != seq) {
+            return null;
+        }
         lastSeq = seq;
         lastNewFrameNanos = System.nanoTime();
         return f;

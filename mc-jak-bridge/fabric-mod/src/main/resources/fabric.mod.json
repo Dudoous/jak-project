@@ -21,6 +21,7 @@
     "fabric-api": "*"
   },
   "mixins": [
-    "jakbridge.mixins.json"
+    "jakbridge.mixins.json",
+    "jakbridge.optional.mixins.json"
   ]
 }

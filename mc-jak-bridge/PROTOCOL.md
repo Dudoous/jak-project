@@ -33,7 +33,7 @@ ignored.
 | 48     | f32  | vfov    | vertical FOV, degrees |
 | 52     | f32  | forward | unused, 0 |
 | 56     | f32  | strafe  | unused, 0 |
-| 60     | u32  | buttons | 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use |
+| 60     | u32  | buttons | 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use; Jak's buttons: 32 ○, 64 ✕, 128 △, 256 left, 512 right, 1024 up, 2048 down |
 
 The runtime considers Minecraft "connected" while the newest CAMERA packet is younger than
 `(-> *mc-passthrough* timeout-ms)` (default 250 ms). While connected, Jak is hidden and frozen and
@@ -47,11 +47,11 @@ the camera is at Steve's eyes; after that Jak comes back.
 
 | data | meaning |
 |------|---------|
-| `[0..2]` | where Jak stood when Minecraft took over (Jak meters, feet) |
+| `[0..2]` | where Steve must be (Jak meters, feet): where Jak stood when Minecraft took over or where the game last moved Jak |
 | `[3]` | total damage Jak's enemies dealt to Steve (Minecraft health points, only grows) |
 | `[4]` | Jak health |
-| `[5]` | flags: bit 1 = Minecraft has taken over |
-| `[6]` | activation id — changes each time Minecraft takes over; Minecraft teleports Steve to `[0..2]` once per id |
+| `[5]` | flags: bit 1 = Minecraft has taken over, bit 2 = a cutscene plays with Jak's own camera (show the picture full screen) |
+| `[6]` | activation id — changes each time Minecraft takes over and each time the game moved Jak somewhere by itself (warp gate, launcher, checkpoint); Minecraft teleports Steve to `[0..2]` once per id |
 | `[7]` | Jak water surface at Steve (Jak meters), below −50000 = no water |
 
 Sent every frame from GOAL with `(pc-mc-send-state ptr)` while Minecraft is connected. If no

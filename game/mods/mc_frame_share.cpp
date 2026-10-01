@@ -48,7 +48,11 @@ struct FrameHeader {
   u32 height;
   u32 format;
   u32 frames_written;
-  u32 reserved[9];
+  // the camera this frame was rendered from (see goal_pose_used), so Minecraft can match it
+  u32 pose_valid;
+  u32 pose_seq;
+  float pose[6];  // x, y, z (Jak meters, eye), yaw, pitch, vfov (Minecraft degrees)
+  u32 reserved;
 };
 static_assert(sizeof(FrameHeader) == kFrameHeaderSize, "frame header must be 64 bytes");
 
@@ -184,6 +188,15 @@ void export_frame_if_wanted(int x, int y, int w, int h) {
   std::atomic_thread_fence(std::memory_order_seq_cst);
   hdr->width = (u32)w;
   hdr->height = (u32)h;
+  const FramePose pose = rendered_pose();
+  hdr->pose_valid = pose.valid;
+  hdr->pose_seq = pose.seq;
+  hdr->pose[0] = pose.x;
+  hdr->pose[1] = pose.y;
+  hdr->pose[2] = pose.z;
+  hdr->pose[3] = pose.yaw;
+  hdr->pose[4] = pose.pitch;
+  hdr->pose[5] = pose.vfov;
 
   glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
   glReadBuffer(GL_BACK);

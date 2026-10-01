@@ -20,9 +20,30 @@ import org.lwjgl.opengl.GL12;
  * Draws the frame Jak rendered (from Steve's eyes) as Minecraft's sky, so every
  * Minecraft thing (blocks, hand, mobs, HUD) is drawn on top of Jak's world.
  *
- * Called from WorldRendererMixin in place of the vanilla sky.
+ * Each frame, {@link #latch()} (called when Minecraft sets up its camera) takes Jak's newest
+ * picture together with the camera pose it was rendered from; Minecraft can then draw its own
+ * world from that same pose (see CameraMixin), so the two pictures line up exactly.
+ * {@link #drawInsteadOfSky()} (WorldRendererMixin) draws the latched picture.
  */
 public final class JakSky {
+    /** Where a Jak picture was taken from (Jak meters, Minecraft degrees). */
+    public static final class Pose {
+        public final int seq;
+        public final double x, y, z;
+        public final float yaw, pitch;
+
+        Pose(int seq, double x, double y, double z, float yaw, float pitch) {
+            this.seq = seq;
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+            this.pitch = pitch;
+        }
+    }
+
+    private static Pose framePose;
+    private static boolean latchedThisFrame = false;
     private static FrameReader reader;
     private static int texture = -1;
     private static int texWidth = 0;
@@ -46,10 +67,30 @@ public final class JakSky {
                 && reader.isFresh() && haveFrame;
     }
 
-    /** Pull a new frame from Jak, if any, into the texture. Call once per rendered frame. */
+    /** The pose of the picture in the texture, or null (none, stale, or not from Minecraft's camera). */
+    public static Pose framePose() {
+        return active() ? framePose : null;
+    }
+
+    /** Take Jak's newest picture (if a new one arrived) for this rendered frame. */
+    public static void latch() {
+        latchedThisFrame = true;
+        if (broken || reader == null || !JakBridgeClient.streaming()) {
+            return;
+        }
+        try {
+            update();
+        } catch (Throwable t) {
+            broken = true;
+            JakBridgeClient.LOG.error("Reading Jak's picture failed, falling back to the normal sky", t);
+        }
+    }
+
+    /** Pull a new frame from Jak, if any, into the texture. */
     private static void update() {
         FrameReader.Frame f = reader.poll();
         if (f == null) return;
+        framePose = f.poseValid ? new Pose(f.poseSeq, f.x, f.y, f.z, f.yaw, f.pitch) : null;
         if (texture < 0) {
             texture = GlStateManager._genTexture();
             RenderSystem.bindTexture(texture);
@@ -87,11 +128,13 @@ public final class JakSky {
             return false;
         }
         try {
-            update();
+            // normally already done when the camera was set up; this is the fallback
+            if (!latchedThisFrame) update();
+            latchedThisFrame = false;
             if (!reader.isFresh() || !haveFrame) {
                 return false;
             }
-            drawFullscreen();
+            drawFullscreen(false);
             return true;
         } catch (Throwable t) {
             broken = true;
@@ -100,12 +143,29 @@ public final class JakSky {
         }
     }
 
-    private static void drawFullscreen() {
+    /** Cutscenes: Jak's picture over everything (called after the HUD is drawn). */
+    public static void drawCutscene() {
+        if (!active() || !JakBridgeClient.cutscene()) return;
+        try {
+            drawFullscreen(true);
+        } catch (Throwable t) {
+            broken = true;
+            JakBridgeClient.LOG.error("Drawing Jak's cutscene failed", t);
+        }
+    }
+
+    private static void drawFullscreen(boolean fit) {
         Framebuffer fb = MinecraftClient.getInstance().getFramebuffer();
         float mcAspect = (float) fb.textureWidth / Math.max(1, fb.textureHeight);
         float jakAspect = (float) frameWidth / Math.max(1, frameHeight);
         // Both cameras share the vertical FOV, so match heights and centre horizontally.
         float hx = jakAspect / mcAspect;
+        float hy = 1f;
+        if (fit && hx > 1f) {
+            // cutscene: the whole picture must fit on screen
+            hy = 1f / hx;
+            hx = 1f;
+        }
 
         Matrix4f oldProjection = new Matrix4f(RenderSystem.getProjectionMatrix());
         VertexSorter oldSorting = RenderSystem.getVertexSorting();
@@ -128,10 +188,10 @@ public final class JakSky {
         RenderSystem.setShaderTexture(0, texture);
 
         BufferBuilder bb = Tessellator.getInstance().begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE);
-        bb.vertex(-hx, -1f, 0f).texture(0f, 0f);
-        bb.vertex(hx, -1f, 0f).texture(1f, 0f);
-        bb.vertex(hx, 1f, 0f).texture(1f, 1f);
-        bb.vertex(-hx, 1f, 0f).texture(0f, 1f);
+        bb.vertex(-hx, -hy, 0f).texture(0f, 0f);
+        bb.vertex(hx, -hy, 0f).texture(1f, 0f);
+        bb.vertex(hx, hy, 0f).texture(1f, 1f);
+        bb.vertex(-hx, hy, 0f).texture(0f, 1f);
         BufferRenderer.drawWithGlobalProgram(bb.end());
 
         RenderSystem.enableCull();

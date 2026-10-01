@@ -38,12 +38,22 @@ public final class BridgeSocket implements AutoCloseable {
     /** JAK_STATE flag: Minecraft has taken over. data[0..2] = Jak's position when that happened,
      *  data[6] = activation id (changes each time it starts again). */
     public static final int JAK_FLAG_STEVE = 2;
+    /** JAK_STATE flag: a cutscene is playing with Jak's own camera (show Jak's picture full screen). */
+    public static final int JAK_FLAG_CUTSCENE = 4;
 
     public static final int BUTTON_JUMP = 1;
     public static final int BUTTON_SNEAK = 2;
     public static final int BUTTON_SPRINT = 4;
     public static final int BUTTON_ATTACK = 8;
     public static final int BUTTON_USE = 16;
+    /** Minecraft keys that are Jak's buttons (talk to people, warp gates, yes/no questions). */
+    public static final int BUTTON_JAK_CIRCLE = 32;
+    public static final int BUTTON_JAK_X = 64;
+    public static final int BUTTON_JAK_TRIANGLE = 128;
+    public static final int BUTTON_JAK_LEFT = 256;
+    public static final int BUTTON_JAK_RIGHT = 512;
+    public static final int BUTTON_JAK_UP = 1024;
+    public static final int BUTTON_JAK_DOWN = 2048;
 
     /** Latest state the Jak side sent back (see PROTOCOL.md, JAK_STATE). */
     public static final class JakState {
@@ -72,15 +82,19 @@ public final class BridgeSocket implements AutoCloseable {
         this.receiver.start();
     }
 
-    /** Send one camera packet. Yaw/pitch/fov in degrees, position in blocks (eye position). */
-    public synchronized void sendCamera(double x, double y, double z, float yaw, float pitch,
+    /**
+     * Send one camera packet. Yaw/pitch/fov in degrees, position in blocks (eye position).
+     * Returns the packet's sequence number (Jak tags the frame it draws from it with this number).
+     */
+    public synchronized int sendCamera(double x, double y, double z, float yaw, float pitch,
                                         float vfov, float forward, float strafe, int buttons,
                                         int flags) throws IOException {
         sendView.clear();
         sendView.putInt(MAGIC);
         sendView.putShort(VERSION);
         sendView.putShort(TYPE_CAMERA);
-        sendView.putInt(seq++);
+        int mySeq = seq++;
+        sendView.putInt(mySeq);
         sendView.putInt(flags);
         sendView.putDouble(x);
         sendView.putDouble(y);
@@ -92,6 +106,7 @@ public final class BridgeSocket implements AutoCloseable {
         sendView.putFloat(strafe);
         sendView.putInt(buttons);
         socket.send(new DatagramPacket(sendBuf, CAMERA_PACKET_SIZE, host, port));
+        return mySeq;
     }
 
     /** Send a gameplay event to Jak (see PROTOCOL.md, EVENT). Coordinates in Jak meters. */

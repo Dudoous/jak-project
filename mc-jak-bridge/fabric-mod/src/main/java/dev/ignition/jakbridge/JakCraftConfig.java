@@ -18,6 +18,10 @@ import java.util.Properties;
  *                      is 4064 blocks tall, so all of Jak's world fits without an offset)
  *   visible_collision  true = glass instead of invisible barriers (to check alignment)
  *   collision_radius   chunks around the player that get collision blocks (default 8)
+ *   view_sync          locked (default): Minecraft draws its world from the exact spot Jak's
+ *                      picture was taken from, so blocks never slide over Jak's world (the view
+ *                      follows the mouse a few frames late). fast: no delay, but Jak's world trails
+ *                      behind when you move. F6 switches in game.
  */
 public final class JakCraftConfig {
     private final Path file;
@@ -101,6 +105,15 @@ public final class JakCraftConfig {
 
     public boolean visibleCollision() {
         return Boolean.parseBoolean(props.getProperty("visible_collision", "false").trim());
+    }
+
+    public boolean viewLocked() {
+        return !"fast".equalsIgnoreCase(props.getProperty("view_sync", "locked").trim());
+    }
+
+    public void setViewLocked(boolean locked) {
+        props.setProperty("view_sync", locked ? "locked" : "fast");
+        save();
     }
 
     public int collisionRadius() {

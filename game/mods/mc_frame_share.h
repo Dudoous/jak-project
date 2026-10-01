@@ -14,7 +14,9 @@
  *   0  u32 magic 'JKFR' (0x52464B4A)   4 u32 version (1)
  *   8  u32 seq (odd while writing, even when a frame is complete)
  *   12 u32 width  16 u32 height  20 u32 format (1 = RGBA8, bottom row first)
- *   24 u32 frames written  28..63 reserved
+ *   24 u32 frames written
+ *   28 u32 pose valid  32 u32 pose seq (CAMERA packet)  36 f32[6] pose: x y z yaw pitch vfov
+ *   60 reserved
  *   64 pixels
  */
 
