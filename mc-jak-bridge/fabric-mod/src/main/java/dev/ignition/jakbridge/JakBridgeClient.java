@@ -5,6 +5,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.GameOptions;
@@ -21,30 +22,57 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 
 /**
- * Client side of the Jak x Minecraft passthrough.
+ * Client side of JakCraft (Jak x Minecraft passthrough).
  *
- * Every rendered frame, sends the Minecraft camera (eye position, yaw, pitch, FOV) and the raw
- * movement keys to the OpenGOAL runtime.
+ * STEVE mode (default): you play Minecraft inside Jak's world. Minecraft does all the gameplay
+ * (movement, blocks, hotbar, mobs); Jak renders his world from Steve's eyes and that image replaces
+ * Minecraft's sky; Jak's level collision becomes invisible barrier blocks so Steve walks on Jak's
+ * ground. Jak himself is hidden.
+ * BODY mode: Minecraft's keys drive Jak with Jak's physics (Steve follows Jak).
+ * FREE mode: Jak's camera follows Steve, no collision.
  *
- * BODY mode (default, F9 toggles): Jak's physics is the source of truth. WASD/jump/sneak/clicks
- * drive Jak, Steve's own movement is switched off (see KeyboardInputMixin), and Steve is teleported
- * every tick to wherever Jak is. FREE mode: Steve moves normally and Jak's camera follows him.
- *
- * F8 toggles streaming entirely. Target: Minecraft 1.21.1, Yarn mappings.
+ * F9 cycles the modes, F8 turns the bridge on/off, F7 puts Steve back where Jak was.
+ * Target: Minecraft 1.21.1, Yarn mappings.
  */
 public final class JakBridgeClient implements ClientModInitializer {
     public static final String MOD_ID = "jakbridge";
     public static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
 
+    public enum Mode {
+        STEVE("STEVE mode: Minecraft gameplay in Jak's world"),
+        BODY("BODY mode: your keys drive Jak"),
+        FREE("FREE mode: Jak's camera follows Steve");
+
+        final String description;
+
+        Mode(String description) {
+            this.description = description;
+        }
+
+        Mode next() {
+            return values()[(ordinal() + 1) % values().length];
+        }
+    }
+
     /** JAK_STATE packets older than this are ignored (Jak closed, paused in a menu, ...). */
     private static final long JAK_STATE_TIMEOUT_NANOS = 500_000_000L;
 
     private static BridgeSocket bridge;
+    private static JakCraftConfig config;
+    private static CollisionPlacer collision;
     private static boolean streaming = true;
-    private static boolean bodyMode = true;
+    private static volatile Mode mode = Mode.STEVE;
     private static KeyBinding toggleKey;
-    private static KeyBinding bodyModeKey;
+    private static KeyBinding modeKey;
+    private static KeyBinding respawnKey;
     private static long lastErrorLogNanos = 0;
+    private static int lastSpawnActivation = -1;
+    private static boolean toldStatus = false;
+    private static String lastStatusShown = "";
+
+    public static Mode mode() {
+        return mode;
+    }
 
     @Override
     public void onInitializeClient() {
@@ -66,10 +94,18 @@ public final class JakBridgeClient implements ClientModInitializer {
             return;
         }
 
+        config = new JakCraftConfig(FabricLoader.getInstance().getConfigDir());
+        collision = new CollisionPlacer(config);
+        collision.register();
+        collision.startLoading();
+        JakSky.init();
+
         toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.jakbridge.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "category.jakbridge"));
-        bodyModeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.jakbridge.body_mode", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F9, "category.jakbridge"));
+        modeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.jakbridge.mode", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F9, "category.jakbridge"));
+        respawnKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.jakbridge.respawn", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F7, "category.jakbridge"));
 
         ClientTickEvents.END_CLIENT_TICK.register(JakBridgeClient::onEndTick);
 
@@ -83,8 +119,8 @@ public final class JakBridgeClient implements ClientModInitializer {
         });
     }
 
-    /** Latest JAK_STATE if it is recent and says Jak is in BODY mode, else null. */
-    private static BridgeSocket.JakState freshBodyState() {
+    /** Latest JAK_STATE if it is recent and has the given flag, else null. */
+    private static BridgeSocket.JakState freshState(int flag) {
         if (bridge == null) {
             return null;
         }
@@ -92,15 +128,15 @@ public final class JakBridgeClient implements ClientModInitializer {
         if (state == null || System.nanoTime() - state.receivedNanos > JAK_STATE_TIMEOUT_NANOS) {
             return null;
         }
-        if ((((int) state.data[5]) & BridgeSocket.JAK_FLAG_BODY) == 0) {
+        if ((((int) state.data[5]) & flag) == 0) {
             return null;
         }
         return state;
     }
 
-    /** Used by KeyboardInputMixin: while Jak is driving the body, Steve must not walk by himself. */
+    /** Used by KeyboardInputMixin: in BODY mode Jak drives the body, Steve must not walk by himself. */
     public static boolean isSuppressingMovement() {
-        return streaming && bodyMode && freshBodyState() != null;
+        return streaming && mode == Mode.BODY && freshState(BridgeSocket.JAK_FLAG_BODY) != null;
     }
 
     private static void onEndTick(MinecraftClient client) {
@@ -108,23 +144,53 @@ public final class JakBridgeClient implements ClientModInitializer {
             streaming = !streaming;
             say(client, "Jak bridge " + (streaming ? "ON" : "OFF"));
         }
-        while (bodyModeKey.wasPressed()) {
-            bodyMode = !bodyMode;
-            say(client, bodyMode
-                    ? "Jak bridge: BODY mode (you move with Jak's physics)"
-                    : "Jak bridge: FREE mode (Jak's camera follows Steve)");
+        while (modeKey.wasPressed()) {
+            mode = mode.next();
+            lastSpawnActivation = -1;
+            say(client, mode.description);
         }
 
         ClientPlayerEntity player = client.player;
-        if (player == null || !isSuppressingMovement()) {
+        if (player == null) {
+            toldStatus = false;
+            lastStatusShown = ""; // show the collision status again when joining a world
             return;
         }
-        BridgeSocket.JakState state = freshBodyState();
+
+        // collision status: progress on the action bar, the final result once in chat
+        String status = collision.status();
+        if (mode == Mode.STEVE && !status.equals(lastStatusShown)) {
+            boolean finalResult = collision.loaded() || !status.startsWith("loading");
+            player.sendMessage(Text.literal("[JakCraft] " + status), !finalResult);
+            toldStatus = true;
+            lastStatusShown = status;
+        }
+        while (respawnKey.wasPressed()) {
+            lastSpawnActivation = -1; // next STEVE state puts Steve back where Jak started
+            say(client, "Back to where Jak was standing");
+        }
+
+        boolean steve = streaming && mode == Mode.STEVE && freshState(BridgeSocket.JAK_FLAG_STEVE) != null;
+        collision.setSteveActive(steve);
+        if (steve) {
+            BridgeSocket.JakState s = freshState(BridgeSocket.JAK_FLAG_STEVE);
+            int activation = (int) s.data[6];
+            if (activation != lastSpawnActivation && collision.loaded()) {
+                // Jak just handed over: put Steve where Jak was standing.
+                lastSpawnActivation = activation;
+                collision.requestSpawn(s.data[0], s.data[1], s.data[2]);
+            }
+        }
+
+        if (!isSuppressingMovement()) {
+            return;
+        }
+        BridgeSocket.JakState state = freshState(BridgeSocket.JAK_FLAG_BODY);
         if (state == null) {
             return;
         }
-        // data[0..2] = where Steve's eyes should be. Convert to feet using the current eye offset
-        // (which is lower while sneaking).
+        // BODY: data[0..2] = where Steve's eyes should be. Convert to feet using the current eye
+        // offset (which is lower while sneaking).
         double eyeOffset = player.getEyeY() - player.getY();
         player.setPosition(state.data[0], state.data[1] - eyeOffset, state.data[2]);
         player.setVelocity(Vec3d.ZERO);
@@ -151,6 +217,10 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
 
         Vec3d pos = camera.getPos();
+        double x = pos.x, y = pos.y, z = pos.z;
+        if (mode == Mode.STEVE) {
+            y -= collision.yOffset(); // STEVE packets carry Jak-space meters
+        }
         float yaw = MathHelper.wrapDegrees(camera.getYaw());
         float pitch = camera.getPitch();
         GameOptions options = client.options;
@@ -175,10 +245,11 @@ public final class JakBridgeClient implements ClientModInitializer {
             strafe = 0f;
             buttons = 0;
         }
-        if (bodyMode) flags |= BridgeSocket.FLAG_BODY_MODE;
+        if (mode == Mode.BODY) flags |= BridgeSocket.FLAG_BODY_MODE;
+        if (mode == Mode.STEVE) flags |= BridgeSocket.FLAG_STEVE_MODE;
 
         try {
-            bridge.sendCamera(pos.x, pos.y, pos.z, yaw, pitch, vfov, forward, strafe, buttons, flags);
+            bridge.sendCamera(x, y, z, yaw, pitch, vfov, forward, strafe, buttons, flags);
         } catch (IOException e) {
             long now = System.nanoTime();
             if (now - lastErrorLogNanos > 5_000_000_000L) { // don't spam the log every frame

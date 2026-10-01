@@ -209,6 +209,14 @@ u64 goal_get_camera(u32 dst) {
   return 1;
 }
 
+bool steve_mode_active() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (!g_have_packet || !(g_latest.flags & kFlagSteveMode)) {
+    return false;
+  }
+  return clock_type::now() - g_latest_time < std::chrono::milliseconds(250);
+}
+
 u64 goal_send_state(u32 src) {
   const float* in = Ptr<float>(src).c();
   sockaddr_in client;

@@ -37,7 +37,9 @@ exit /b 1
 echo.
 echo  Extracting and compiling... this window will show a lot of text, that's normal.
 echo.
-extractor.exe --proj-path "%~dp0data" --extract --decompile --compile "%ISO%"
+rem rip_collision also exports Jak's level collision as .obj files; the Minecraft mod turns them
+rem into invisible blocks so Steve can walk on Jak's ground.
+extractor.exe --proj-path "%~dp0data" --extract --decompile --compile --decomp-config-override "{\"rip_collision\": true}" "%ISO%"
 if errorlevel 1 goto extract_failed
 echo installed> "data\jakcraft-installed.txt"
 echo.
@@ -52,10 +54,13 @@ pause
 exit /b 1
 
 :play
+rem tell the Minecraft mod where this folder is (it reads Jak's collision from here)
+if not exist "%APPDATA%\JakCraft" mkdir "%APPDATA%\JakCraft"
+> "%APPDATA%\JakCraft\location.txt" echo %~dp0
 echo.
-echo  Starting Jak. When you're in gameplay, start Minecraft with the jakbridge mod
-echo  from the minecraft-mod folder and join a world: your Minecraft view drives Jak's camera.
-echo  To test without Minecraft:  python tools\fake_minecraft.py look
+echo  Starting Jak. Load your save and get into gameplay, then start Minecraft with the
+echo  jakbridge mod and join a Superflat "The Void" world. You play in the Minecraft window;
+echo  keep this Jak window open behind it, not minimised.
 echo.
 gk.exe --proj-path "%~dp0data" -- -boot -fakeiso
 if errorlevel 1 pause

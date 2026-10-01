@@ -26,6 +26,7 @@
 #include "game/graphics/opengl_renderer/ocean/OceanNear.h"
 #include "game/graphics/opengl_renderer/sprite/Sprite3.h"
 #include "game/graphics/pipelines/opengl.h"
+#include "game/mods/mc_frame_share.h"
 
 #include "third-party/imgui/imgui.h"
 #include "third-party/imgui/imgui_stdlib.h"
@@ -1039,6 +1040,15 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
   }
 
   m_last_pmode_alp = settings.pmode_alp_register;
+
+  // Minecraft passthrough (STEVE mode): hand the finished frame to Minecraft.
+  {
+    g_current_renderer = "mc-frame-share";
+    auto prof = m_profiler.root()->make_scoped_child("mc-frame-share");
+    mc_passthrough::export_frame_if_wanted(m_render_state.draw_offset_x,
+                                           m_render_state.draw_offset_y,
+                                           settings.draw_region_width, settings.draw_region_height);
+  }
 
   if (settings.save_screenshot) {
     g_current_renderer = "screenshot";

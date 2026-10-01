@@ -4,7 +4,8 @@
   "package": "dev.ignition.jakbridge.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "KeyboardInputMixin"
+    "KeyboardInputMixin",
+    "WorldRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

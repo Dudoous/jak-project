@@ -24,8 +24,8 @@ ignored.
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested |
-| 16     | f64  | x       | camera (eye) position, blocks |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested, bit 3 STEVE mode requested |
+| 16     | f64  | x       | camera (eye) position, blocks. In STEVE mode: Jak meters (Minecraft Y minus `y_offset`) |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
 | 40     | f32  | yaw     | degrees, wrapped to [-180, 180). 0 faces +Z (south), 90 faces −X (west) |
@@ -42,11 +42,21 @@ The runtime considers Minecraft "connected" while the newest CAMERA packet is yo
 
 | Offset | Type   | Field | Notes |
 |-------:|--------|-------|-------|
-| 12     | f32[8] | data  | `[0..2]` where the Minecraft player's **eyes** should be (Minecraft coordinates), `[3]` yaw echo, `[4]` Jak health, `[5]` flags (bit 0 = BODY mode active), `[6..7]` reserved |
+| 12     | f32[8] | data  | see below |
 
-Sent every frame from GOAL with `(pc-mc-send-state ptr)` while BODY mode is active. The Fabric mod
-teleports the player there each tick (subtracting its current eye height to get the feet) and
-zeroes Steve's own movement input. If no JAK_STATE arrives for 500 ms, Minecraft behaves normally.
+| data | BODY mode (flags bit 0) | STEVE mode (flags bit 1) |
+|------|-------------------------|--------------------------|
+| `[0..2]` | where Steve's **eyes** should be (Minecraft coordinates) | where Jak stood when STEVE mode started (Jak meters, feet) |
+| `[3]` | yaw echo | yaw echo |
+| `[4]` | Jak health | Jak health |
+| `[5]` | flags | flags |
+| `[6]` | activation id | activation id — changes each time a mode starts; Minecraft teleports Steve to `[0..2]` once per id |
+| `[7]` | reserved | reserved |
+
+Sent every frame from GOAL with `(pc-mc-send-state ptr)` while Minecraft drives the camera.
+In BODY mode the Fabric mod teleports the player to `[0..2]` each tick and zeroes Steve's own
+movement. In STEVE mode Minecraft is in charge; Jak only reports where to start. If no JAK_STATE
+arrives for 500 ms, Minecraft behaves normally.
 
 ## Implementations
 

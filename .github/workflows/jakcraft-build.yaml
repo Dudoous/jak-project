@@ -70,7 +70,7 @@ jobs:
           OUT=./ci-artifacts/JakCraft
           ./.github/scripts/releases/extract_build_windows.sh "$OUT" ./ci-artifacts/opengoal-windows-jakcraft ./
           cp mc-jak-bridge/windows/play.bat "$OUT/"
-          cp mc-jak-bridge/README.md mc-jak-bridge/PROTOCOL.md "$OUT/"
+          cp mc-jak-bridge/README.md mc-jak-bridge/PROTOCOL.md mc-jak-bridge/FRAME_SHARING.md "$OUT/"
           mkdir -p "$OUT/tools" "$OUT/minecraft-mod"
           cp mc-jak-bridge/tools/fake_minecraft.py "$OUT/tools/"
           cp ./ci-artifacts/jakbridge-fabric-mod/*.jar "$OUT/minecraft-mod/"

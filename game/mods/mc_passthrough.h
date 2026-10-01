@@ -23,6 +23,12 @@ constexpr u16 kTypeCamera = 1;    // Minecraft -> Jak
 constexpr u16 kTypeJakState = 2;  // Jak -> Minecraft
 constexpr int kDefaultPort = 47800;
 
+// CAMERA packet flags
+constexpr u32 kFlagInWorld = 1;
+constexpr u32 kFlagScreenOpen = 2;
+constexpr u32 kFlagBodyMode = 4;
+constexpr u32 kFlagSteveMode = 8;  // Minecraft is the game; Jak only renders its world for it
+
 // Number of floats written by goal_get_camera.
 constexpr int kCameraFloats = 12;
 
@@ -55,5 +61,9 @@ u64 goal_get_camera(u32 dst);
  * Returns 1 on success, 0 if no client is known yet.
  */
 u64 goal_send_state(u32 src);
+
+/// True while Minecraft is connected (fresh packets) and asking for STEVE mode.
+/// Safe to call from any thread.
+bool steve_mode_active();
 
 }  // namespace mc_passthrough
