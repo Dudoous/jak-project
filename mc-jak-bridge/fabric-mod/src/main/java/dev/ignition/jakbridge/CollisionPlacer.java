@@ -554,10 +554,34 @@ public final class CollisionPlacer {
         if (a != null) a.setBaseValue(value);
     }
 
+    /** Minecraft walking speed per 0.1 of movement_speed attribute, blocks per second. */
+    private static final double BLOCKS_PER_SEC_PER_SPEED = 43.17;
+
+    /** Jump speed for a jump this many blocks high, using Minecraft's jump physics. */
+    static double jumpStrengthFor(double blocks) {
+        double lo = 0.1, hi = 2.0;
+        for (int i = 0; i < 40; i++) {
+            double mid = (lo + hi) / 2;
+            if (jumpHeight(mid) < blocks) lo = mid;
+            else hi = mid;
+        }
+        return (lo + hi) / 2;
+    }
+
+    static double jumpHeight(double strength) {
+        double y = 0, v = strength, best = 0;
+        for (int t = 0; t < 200 && v > -1; t++) {
+            y += v;
+            v = (v - 0.08) * 0.98;
+            best = Math.max(best, y);
+        }
+        return best;
+    }
+
     /**
-     * Steve's body in Jak's world: taller (Jak's world is built for a bigger hero than Minecraft's
-     * 1.8-block player), jumping higher and reaching further to match, and stepping up 1-block
-     * ledges (Jak's slopes become 1-block stairs). scale 0 = back to vanilla.
+     * Steve's body in Jak's world: as tall as Jak, as fast as Jak runs, jumping higher and reaching
+     * further to match, and stepping up 1-block ledges (Jak's slopes become 1-block stairs).
+     * scale 0 = back to vanilla.
      */
     private void applySteveBody(ServerPlayerEntity player, double scale) {
         if (scale == bodyApplied) return;
@@ -565,12 +589,11 @@ public final class CollisionPlacer {
         double s = on ? scale : 1.0;
         setBase(player, EntityAttributes.GENERIC_SCALE, s);
         setBase(player, EntityAttributes.GENERIC_STEP_HEIGHT, on ? Math.max(STEVE_STEP_HEIGHT, VANILLA_STEP_HEIGHT * s) : VANILLA_STEP_HEIGHT);
-        // jump height grows with the square of the jump speed: a bit more than in proportion
-        setBase(player, EntityAttributes.GENERIC_JUMP_STRENGTH, on ? VANILLA_JUMP * Math.sqrt(1.1 * s) : VANILLA_JUMP);
+        setBase(player, EntityAttributes.GENERIC_JUMP_STRENGTH, on ? jumpStrengthFor(config.steveJump()) : VANILLA_JUMP);
         setBase(player, EntityAttributes.PLAYER_BLOCK_INTERACTION_RANGE, VANILLA_BLOCK_RANGE * s);
         setBase(player, EntityAttributes.PLAYER_ENTITY_INTERACTION_RANGE, VANILLA_ENTITY_RANGE * s);
-        setBase(player, EntityAttributes.GENERIC_SAFE_FALL_DISTANCE, VANILLA_SAFE_FALL * s);
-        setBase(player, EntityAttributes.GENERIC_MOVEMENT_SPEED, VANILLA_SPEED * Math.sqrt(s));
+        setBase(player, EntityAttributes.GENERIC_SAFE_FALL_DISTANCE, on ? Math.max(VANILLA_SAFE_FALL * s, config.steveJump() + 1.5) : VANILLA_SAFE_FALL);
+        setBase(player, EntityAttributes.GENERIC_MOVEMENT_SPEED, on ? config.steveSpeed() / BLOCKS_PER_SEC_PER_SPEED : VANILLA_SPEED);
         bodyApplied = scale;
     }
 }

@@ -70,4 +70,13 @@ class DigAndActorTest {
         assertTrue(holeArea > 0.8 && holeArea < 1.3, "about 1 m2 removed, was " + holeArea);
         assertTrue(cut.count() < 2000, "only split near the hole: " + cut.count());
     }
+
+    @Test
+    void jumpStrengthGivesTheAskedHeight() {
+        assertTrue(Math.abs(CollisionPlacer.jumpHeight(0.42) - 1.252) < 0.01, "vanilla jump is 1.25 blocks");
+        for (double h : new double[] {1.25, 2.5, 3.5}) {
+            double got = CollisionPlacer.jumpHeight(CollisionPlacer.jumpStrengthFor(h));
+            assertTrue(Math.abs(got - h) < 0.01, "asked " + h + " got " + got);
+        }
+    }
 }

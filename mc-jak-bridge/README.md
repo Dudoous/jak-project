@@ -21,9 +21,12 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 - **Jak's ground is solid for Steve**: Jak's level shape becomes invisible barrier blocks, so you
   walk on Jak's floors, bump into Jak's walls, and swim in Jak's water. **Crates** (scout fly
   boxes too) and **closed doors** are solid as well, until a crate breaks or a door opens.
-- **Steve is bigger** in Jak's world (1.35×, about 2.4 blocks tall, a bit over Jak's size), jumps
-  higher (about 1.8 blocks) and reaches further. Set `steve_scale` in
-  `.minecraft/config/jakbridge.properties` (1 = normal Minecraft size).
+- **Steve is Jak-sized** in Jak's world: as tall as Jak (2.8 blocks), **walks as fast as Jak runs**
+  (10 blocks/s, sprinting 13), jumps 2.5 blocks and reaches further. Change it in
+  `.minecraft/config/jakbridge.properties`: `steve_scale` (1 = normal Minecraft size),
+  `steve_speed` (blocks per second), `steve_jump` (blocks).
+- In Jak's world Minecraft's **view bobbing, hurt tilt and FOV effects are off** — they made
+  Minecraft's blocks and holes swim against Jak's picture as you walked.
 - **Digging into Jak's ground**: hit Jak's ground with a **pickaxe or shovel** and it turns into
   dirt (stone deeper down) that you mine like normal Minecraft ground; the hole gets dirt walls
   and you can dig down and tunnel. Fists and swords don't dig, so fighting never knocks holes in
@@ -61,7 +64,7 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
    Jak's level shape). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.8.0.jar` (from the
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.9.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
 3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
    **Fancy** (not Fabulous), **Max Framerate 120 or more** (or Unlimited) so Minecraft picks up

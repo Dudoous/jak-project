@@ -85,6 +85,55 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static final int[] sentSeq = new int[1024];
     private static final long[] sentNanos = new long[1024];
     private static volatile float jakDelayMs = -1f;
+    // GameRendererMixin reports in; if it can't apply, the matching options are switched off
+    private static volatile boolean fovHookSeen = false;
+    private static volatile boolean bobHookSeen = false;
+    private static int jakWorldTicks = 0;
+    private static Boolean savedBobView = null;
+    private static Double savedFovEffects = null;
+
+    public static void fovHookWorks() {
+        fovHookSeen = true;
+    }
+
+    public static void bobHookWorks() {
+        bobHookSeen = true;
+    }
+
+    /**
+     * Fallback for GameRendererMixin: view bobbing and FOV effects make Minecraft's picture move
+     * against Jak's. Switched off while in Jak's world, put back afterwards.
+     */
+    private static void viewOptionsFallback(MinecraftClient client) {
+        GameOptions o = client.options;
+        if (inJakWorld) {
+            if (++jakWorldTicks < 40) return;
+            if (!bobHookSeen && savedBobView == null && o.getBobView().getValue()) {
+                savedBobView = Boolean.TRUE;
+                o.getBobView().setValue(false);
+                LOG.info("View bobbing switched off while in Jak's world");
+            }
+            if (!fovHookSeen && savedFovEffects == null && o.getFovEffectScale().getValue() > 0.0) {
+                savedFovEffects = o.getFovEffectScale().getValue();
+                o.getFovEffectScale().setValue(0.0);
+                LOG.info("FOV effects switched off while in Jak's world");
+            }
+        } else {
+            jakWorldTicks = 0;
+            restoreViewOptions(client);
+        }
+    }
+
+    private static void restoreViewOptions(MinecraftClient client) {
+        if (savedBobView != null) {
+            client.options.getBobView().setValue(savedBobView);
+            savedBobView = null;
+        }
+        if (savedFovEffects != null) {
+            client.options.getFovEffectScale().setValue(savedFovEffects);
+            savedFovEffects = null;
+        }
+    }
     private static long lastErrorLogNanos = 0;
     private static int lastSpawnActivation = -1;
     private static String lastStatusShown = "";
@@ -208,6 +257,7 @@ public final class JakBridgeClient implements ClientModInitializer {
                 })));
 
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
+            restoreViewOptions(client);
             if (bridge != null) {
                 bridge.close();
             }
@@ -291,6 +341,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         ClientPlayerEntity player = client.player;
         if (player == null) {
             inJakWorld = false;
+            restoreViewOptions(client);
             collision.setSteveActive(false);
             lastStatusShown = ""; // show the collision status again when joining a world
             return;
@@ -323,6 +374,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         BridgeSocket.JakState s = streaming ? freshState() : null;
         inJakWorld = s != null;
         cutscene = s != null && (((int) s.data[5]) & BridgeSocket.JAK_FLAG_CUTSCENE) != 0;
+        viewOptionsFallback(client);
         collision.setSteveActive(inJakWorld);
         if (s == null) {
             JakWater.clear();

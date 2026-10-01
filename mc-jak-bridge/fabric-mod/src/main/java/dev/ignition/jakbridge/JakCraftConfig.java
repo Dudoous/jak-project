@@ -18,7 +18,11 @@ import java.util.Properties;
  *                      is 4064 blocks tall, so all of Jak's world fits without an offset)
  *   visible_collision  true = glass instead of invisible barriers (to check alignment)
  *   collision_radius   chunks around the player that get collision blocks (default 8)
- *   steve_scale        how big Steve is in Jak's world (default 1.35 = 2.4 blocks tall; 1 = vanilla)
+ *   steve_scale        how big Steve is in Jak's world (default 1.55 = 2.8 blocks, Jak's height;
+ *                      1 = normal Minecraft size)
+ *   steve_speed        Steve's walking speed in Jak's world, blocks per second (default 10 = Jak's
+ *                      running speed; normal Minecraft walking is 4.3). Sprinting is 30% faster.
+ *   steve_jump         how high Steve jumps in Jak's world, blocks (default 2.5; Minecraft 1.25)
  *   view_sync          locked (default): Minecraft draws its world from the exact spot Jak's
  *                      picture was taken from, so blocks never slide over Jak's world (the view
  *                      follows the mouse a few frames late). fast: no delay, but Jak's world trails
@@ -110,9 +114,25 @@ public final class JakCraftConfig {
 
     public double steveScale() {
         try {
-            return Math.max(0.5, Math.min(3.0, Double.parseDouble(props.getProperty("steve_scale", "1.35").trim())));
+            return Math.max(0.5, Math.min(3.0, Double.parseDouble(props.getProperty("steve_scale", "1.55").trim())));
         } catch (NumberFormatException e) {
-            return 1.35;
+            return 1.55;
+        }
+    }
+
+    public double steveSpeed() {
+        try {
+            return Math.max(1.0, Math.min(40.0, Double.parseDouble(props.getProperty("steve_speed", "10").trim())));
+        } catch (NumberFormatException e) {
+            return 10.0;
+        }
+    }
+
+    public double steveJump() {
+        try {
+            return Math.max(0.5, Math.min(10.0, Double.parseDouble(props.getProperty("steve_jump", "2.5").trim())));
+        } catch (NumberFormatException e) {
+            return 2.5;
         }
     }
 
