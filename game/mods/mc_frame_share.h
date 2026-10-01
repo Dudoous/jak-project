@@ -2,9 +2,9 @@
 
 /*!
  * @file mc_frame_share.h
- * STEVE mode: share each rendered Jak frame with Minecraft.
+ * Share each rendered Jak frame with Minecraft.
  *
- * In STEVE mode Minecraft is the game you play, and Jak only renders its world from Minecraft's
+ * Minecraft is the game you play, and Jak only renders its world from Minecraft's
  * camera. After every frame is finished, the renderer copies the visible game image into a
  * memory-mapped file (%TEMP%/jakcraft-frame.bin, override with JAKCRAFT_FRAME_FILE). The Fabric mod
  * maps the same file and draws the image as Minecraft's sky, so Minecraft blocks, hand, mobs and
@@ -30,7 +30,7 @@ constexpr u32 kFrameMaxHeight = 2160;
 
 /*!
  * Call on the render thread once the frame is in the window's back buffer.
- * Does nothing unless Minecraft is connected in STEVE mode.
+ * Does nothing unless Minecraft is connected.
  * (x, y, w, h) is the game's visible region in the window framebuffer.
  */
 void export_frame_if_wanted(int x, int y, int w, int h);

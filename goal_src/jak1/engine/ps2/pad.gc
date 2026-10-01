@@ -269,10 +269,6 @@
 
 (#if PC_PORT (defconstant STICK_DEADZONE (-> *pc-settings* stick-deadzone)) (defconstant STICK_DEADZONE 0.3))
 
-;; og:preserve-this Minecraft passthrough mod: set by pc/features/mc-passthrough.gc to feed
-;; Minecraft's movement keys into controller 0. #f until that file is loaded.
-(define *mc-passthrough-pad-hook* (the-as (function cpad-info none) #f))
-
 (defun service-cpads ()
   "Read from cpads and update vibration"
   ;; iterate over pads
@@ -282,8 +278,6 @@
             (history (-> *cpad-history-list* cpads pad-idx)))
         ;; read from hardware.
         (cpad-get-data pad)
-        ;; og:preserve-this Minecraft passthrough mod
-        (if (and (zero? pad-idx) *mc-passthrough-pad-hook*) (*mc-passthrough-pad-hook* pad))
         (cond
           ((zero? (logand (-> pad valid) 128))
            (dotimes (buzz-idx 2)

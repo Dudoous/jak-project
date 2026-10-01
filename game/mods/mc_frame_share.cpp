@@ -1,6 +1,6 @@
 /*!
  * @file mc_frame_share.cpp
- * STEVE mode: copy each finished Jak frame into a shared memory-mapped file for Minecraft.
+ * Copy each finished Jak frame into a shared memory-mapped file for Minecraft.
  */
 
 #include "mc_frame_share.h"

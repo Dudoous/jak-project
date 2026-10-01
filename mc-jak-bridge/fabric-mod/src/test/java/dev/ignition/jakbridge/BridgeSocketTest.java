@@ -60,4 +60,30 @@ class BridgeSocketTest {
             }
         }
     }
+    @Test
+    void blocksPacketLayout() throws Exception {
+        try (DatagramSocket fakeRuntime = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+            fakeRuntime.setSoTimeout(2000);
+            try (BridgeSocket bridge = new BridgeSocket(fakeRuntime.getLocalPort())) {
+                int[] blocks = {10, -3, 7, BridgeSocket.BLOCK_SOLID, -1, 64, 2000, BridgeSocket.BLOCK_DEADLY};
+                bridge.sendBlocks(blocks, 2);
+
+                byte[] buf = new byte[65536];
+                DatagramPacket p = new DatagramPacket(buf, buf.length);
+                fakeRuntime.receive(p);
+                assertEquals(16 + 2 * 16, p.getLength());
+                ByteBuffer in = ByteBuffer.wrap(buf, 0, p.getLength()).order(ByteOrder.LITTLE_ENDIAN);
+                assertEquals(BridgeSocket.MAGIC, in.getInt(0));
+                assertEquals(BridgeSocket.TYPE_BLOCKS, in.getShort(6));
+                assertEquals(2, in.getInt(12));
+                for (int i = 0; i < 8; i++) assertEquals(blocks[i], in.getInt(16 + 4 * i));
+
+                // never more than MAX_BLOCKS, so the packet always fits in one datagram
+                bridge.sendBlocks(new int[4 * (BridgeSocket.MAX_BLOCKS + 10)], BridgeSocket.MAX_BLOCKS + 10);
+                p.setLength(buf.length);
+                fakeRuntime.receive(p);
+                assertEquals(16 + 16 * BridgeSocket.MAX_BLOCKS, p.getLength());
+            }
+        }
+    }
 }

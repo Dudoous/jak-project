@@ -4,7 +4,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 
 /**
- * STEVE mode: Jak's water. Jak tells us the water surface height where Steve stands (from Jak's
+ * Jak's water. Jak tells us the water surface height where Steve stands (from Jak's
  * own water volumes), and EntityWaterMixin makes Minecraft treat the player as being in water
  * below that height: swimming, slow sinking, drowning, putting out fire. Nothing is placed in the
  * world, so Jak's own water is what you see.
@@ -28,7 +28,7 @@ public final class JakWater {
     }
 
     private static boolean applies(Entity e) {
-        return e instanceof PlayerEntity && !Double.isNaN(surfaceY) && JakBridgeClient.mode() == JakBridgeClient.Mode.STEVE;
+        return e instanceof PlayerEntity && !Double.isNaN(surfaceY) && JakBridgeClient.inJakWorld();
     }
 
     /** Feet below the surface. */

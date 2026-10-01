@@ -19,30 +19,24 @@ public final class BridgeSocket implements AutoCloseable {
     public static final short TYPE_CAMERA = 1;
     public static final short TYPE_JAK_STATE = 2;
     public static final short TYPE_EVENT = 3;
+    public static final short TYPE_BLOCKS = 5;
     public static final int EVENT_EXPLOSION = 1;
     public static final int EVENT_PACKET_SIZE = 36;
-    public static final short TYPE_HOST = 4;
-    public static final int HOST_PACKET_SIZE = 64;
-    /** Ask Jak for JAK mode: you play Jak's game, Minecraft adds Steve's gameplay on top. */
-    public static final int FLAG_JAK_MODE = 16;
-    public static final int HOST_ATTACK = 1;
-    public static final int HOST_USE = 2;
-    public static final int HOST_PICK = 4;
     public static final int DEFAULT_PORT = 47800;
     public static final int CAMERA_PACKET_SIZE = 64;
     public static final int JAK_STATE_PACKET_SIZE = 44;
+    /** Most blocks one BLOCKS packet carries (must match kMaxBlocks in mc_passthrough.h). */
+    public static final int MAX_BLOCKS = 2048;
+    public static final int BLOCK_SOLID = 1;
+    public static final int BLOCK_DEADLY = 2;
 
     public static final int FLAG_IN_WORLD = 1;
     public static final int FLAG_SCREEN_OPEN = 2;
-    /** Ask Jak for BODY mode: Jak's physics moves you, Minecraft keys drive Jak. */
-    public static final int FLAG_BODY_MODE = 4;
-    /** Ask Jak for STEVE mode: Minecraft is the game, Jak renders his world for it. */
+    /** Minecraft is playing: Jak renders his world from Steve's eyes and is hidden/frozen. */
     public static final int FLAG_STEVE_MODE = 8;
 
-    /** JAK_STATE flag: Jak is in BODY mode, data[0..2] is where the Minecraft eyes should be. */
-    public static final int JAK_FLAG_BODY = 1;
-    /** JAK_STATE flag: Jak is in STEVE mode, data[0..2] = Jak's position when Steve took over,
-     *  data[6] = activation id (changes each time STEVE mode starts). */
+    /** JAK_STATE flag: Minecraft has taken over. data[0..2] = Jak's position when that happened,
+     *  data[6] = activation id (changes each time it starts again). */
     public static final int JAK_FLAG_STEVE = 2;
 
     public static final int BUTTON_JUMP = 1;
@@ -57,19 +51,6 @@ public final class BridgeSocket implements AutoCloseable {
         public final float[] data = new float[8];
         public long receivedNanos;
     }
-
-    /** JAK mode: Jak's first-person camera, body and the input pressed in Jak's window. */
-    public static final class HostState {
-        public int seq;
-        public float eyeX, eyeY, eyeZ, yaw, pitch, feetX, feetY, feetZ, vfov;
-        public int buttons;
-        public int flags;
-        public long receivedNanos;
-    }
-
-    private volatile HostState latestHost;
-    private int pendingWheel = 0;   // guarded by this
-    private int pendingHotbar = 0;  // guarded by this
 
     private final DatagramSocket socket;
     private final InetAddress host;
@@ -122,22 +103,19 @@ public final class BridgeSocket implements AutoCloseable {
         socket.send(new DatagramPacket(b.array(), EVENT_PACKET_SIZE, host, port));
     }
 
-    public HostState latestHost() {
-        return latestHost;
-    }
-
-    /** Wheel steps scrolled in Jak's window since the last call (+ = up). */
-    public synchronized int takeWheel() {
-        int w = pendingWheel;
-        pendingWheel = 0;
-        return w;
-    }
-
-    /** Hotbar key (1-9) pressed in Jak's window since the last call, or 0. */
-    public synchronized int takeHotbar() {
-        int h = pendingHotbar;
-        pendingHotbar = 0;
-        return h;
+    /**
+     * Send the blocks Steve built near him (see PROTOCOL.md, BLOCKS). xyzk holds 4 ints per block:
+     * x, y, z (Jak meters, the block's minimum corner) and kind (BLOCK_SOLID / BLOCK_DEADLY bits).
+     * The list replaces the previous one; send an empty list to clear it.
+     */
+    public synchronized void sendBlocks(int[] xyzk, int count) throws IOException {
+        int n = Math.max(0, Math.min(count, Math.min(MAX_BLOCKS, xyzk.length / 4)));
+        ByteBuffer b = ByteBuffer.allocate(16 + 16 * n).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(MAGIC).putShort(VERSION).putShort(TYPE_BLOCKS).putInt(seq++).putInt(n);
+        for (int i = 0; i < n * 4; i++) {
+            b.putInt(xyzk[i]);
+        }
+        socket.send(new DatagramPacket(b.array(), b.capacity(), host, port));
     }
 
     public JakState latestJakState() {
@@ -159,35 +137,7 @@ public final class BridgeSocket implements AutoCloseable {
                     continue;
                 }
                 ByteBuffer in = ByteBuffer.wrap(buf, 0, packet.getLength()).order(ByteOrder.LITTLE_ENDIAN);
-                if (in.getInt() != MAGIC || in.getShort() != VERSION) {
-                    continue;
-                }
-                short type = in.getShort();
-                if (type == TYPE_HOST && packet.getLength() >= HOST_PACKET_SIZE) {
-                    HostState h = new HostState();
-                    h.seq = in.getInt();
-                    h.eyeX = in.getFloat();
-                    h.eyeY = in.getFloat();
-                    h.eyeZ = in.getFloat();
-                    h.yaw = in.getFloat();
-                    h.pitch = in.getFloat();
-                    h.feetX = in.getFloat();
-                    h.feetY = in.getFloat();
-                    h.feetZ = in.getFloat();
-                    h.vfov = in.getFloat();
-                    h.buttons = in.getInt();
-                    int wheel = in.getInt();
-                    int hotbar = in.getInt();
-                    h.flags = in.getInt();
-                    h.receivedNanos = System.nanoTime();
-                    synchronized (this) {
-                        pendingWheel += wheel;
-                        if (hotbar != 0) pendingHotbar = hotbar;
-                    }
-                    latestHost = h;
-                    continue;
-                }
-                if (type != TYPE_JAK_STATE) {
+                if (in.getInt() != MAGIC || in.getShort() != VERSION || in.getShort() != TYPE_JAK_STATE) {
                     continue;
                 }
                 JakState state = new JakState();

@@ -8,7 +8,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** STEVE mode: TNT, creepers and other Minecraft explosions also blow up Jak's enemies. */
+/** TNT, creepers and other Minecraft explosions also blow up Jak's enemies. */
 @Mixin(Explosion.class)
 public abstract class ExplosionMixin {
     @Inject(method = "collectBlocksAndDamageEntities", at = @At("HEAD"), require = 0)

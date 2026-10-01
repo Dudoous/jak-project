@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * STEVE mode: Jak's water counts as water for the player (see JakWater). Runs on both the client
+ * Jak's water counts as water for the player (see JakWater). Runs on both the client
  * (movement, swimming) and the integrated server (drowning). require = 0 so a renamed method can't
  * crash Minecraft; you'd just not be able to swim.
  */

@@ -125,7 +125,7 @@ public final class FrameReader implements AutoCloseable {
         return map != null && map.getInt(8) == f.seq;
     }
 
-    /** True if Jak delivered a new frame recently (Jak is running in STEVE mode). */
+    /** True if Jak delivered a new frame recently. */
     public boolean isFresh() {
         return lastNewFrameNanos != 0 && System.nanoTime() - lastNewFrameNanos < FRESH_NANOS;
     }

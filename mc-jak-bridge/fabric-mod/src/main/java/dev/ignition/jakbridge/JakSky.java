@@ -17,7 +17,7 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 
 /**
- * STEVE mode: draws the frame Jak rendered (from Steve's eyes) as Minecraft's sky, so every
+ * Draws the frame Jak rendered (from Steve's eyes) as Minecraft's sky, so every
  * Minecraft thing (blocks, hand, mobs, HUD) is drawn on top of Jak's world.
  *
  * Called from WorldRendererMixin in place of the vanilla sky.
@@ -42,7 +42,7 @@ public final class JakSky {
 
     /** True while Jak keeps sending frames. */
     public static boolean active() {
-        return !broken && reader != null && JakBridgeClient.mode() == JakBridgeClient.Mode.STEVE
+        return !broken && reader != null && JakBridgeClient.streaming()
                 && reader.isFresh() && haveFrame;
     }
 
@@ -83,7 +83,7 @@ public final class JakSky {
      * Replace the sky. Returns true if Jak's world was drawn (the vanilla sky must then be skipped).
      */
     public static boolean drawInsteadOfSky() {
-        if (broken || reader == null || JakBridgeClient.mode() != JakBridgeClient.Mode.STEVE) {
+        if (broken || reader == null || !JakBridgeClient.streaming()) {
             return false;
         }
         try {

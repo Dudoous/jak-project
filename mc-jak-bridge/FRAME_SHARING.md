@@ -1,4 +1,4 @@
-# Jak → Minecraft frame sharing (STEVE mode)
+# Jak → Minecraft frame sharing
 
 OpenGOAL writes every finished frame into a memory-mapped file; the Fabric mod maps the same file
 and draws the image in place of Minecraft's sky.
@@ -7,7 +7,7 @@ File: `%TEMP%\jakcraft-frame.bin` (Java: `java.io.tmpdir`; Linux `/tmp/jakcraft-
 Override on both sides with the `JAKCRAFT_FRAME_FILE` environment variable. The file is created by
 OpenGOAL with a fixed size: 64-byte header + 3840 × 2160 × 4 bytes.
 
-Only written while Minecraft is connected in STEVE mode (CAMERA flag bit 3).
+Only written while Minecraft is connected (CAMERA flag bit 3).
 
 | Offset | Type | Field |
 |-------:|------|-------|
@@ -27,10 +27,6 @@ frame was torn and the next one replaces it.
 Implementations: `game/mods/mc_frame_share.cpp` (writer, `glReadPixels` of the window back buffer
 after Jak's frame is finished), `fabric-mod/.../FrameReader.java` + `JakSky.java` (reader).
 
-## Minecraft → Jak (JAK mode)
-
-The other direction uses the same layout in `%TEMP%\jakcraft-mc-frame.bin` (override:
-`JAKCRAFT_MC_FRAME_FILE`), magic `0x5246434D` (`M C F R`), created by the Fabric mod
-(`McFrameWriter.java`, filled by `JakHost.exportFrame` after the HUD is drawn). Pixels are
-premultiplied alpha: transparent where Jak's world should show. OpenGOAL blends it over its
-finished frame (`game/mods/mc_overlay.cpp`).
+Minecraft also draws Jak's level shape (the collision triangles) into its depth buffer right after
+this picture, without colour, so Minecraft blocks behind Jak's walls are hidden
+(`fabric-mod/.../JakDepthProxy.java`).

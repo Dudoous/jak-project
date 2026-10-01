@@ -5,43 +5,34 @@
 (require "engine/geometry/geometry.gc")
 (require "engine/camera/cam-interface-h.gc")
 (require "engine/target/target-h.gc")
-(require "engine/ps2/pad.gc")
 (require "engine/target/target-handler.gc")
 (require "engine/common-obs/water.gc")
 (require "engine/common-obs/nav-enemy.gc")
 
-;; Minecraft passthrough mod.
+;; Minecraft passthrough mod (JakCraft): Minecraft on top of Jak and Daxter.
 ;;
-;; The companion Fabric mod sends the Minecraft player's eye position, yaw, pitch, FOV and movement
-;; keys every frame over localhost UDP. The C++ runtime (game/mods/mc_passthrough.cpp) keeps the
-;; newest packet; this file turns it into gameplay. Minecraft picks the mode (F9 cycles):
+;; You play Minecraft, in the Minecraft window. Jak and Daxter is only the world you play in:
+;;  - The companion Fabric mod sends Steve's eye position, yaw, pitch and FOV every frame over
+;;    localhost UDP (game/mods/mc_passthrough.cpp keeps the newest packet).
+;;  - Jak's camera is put at Steve's eyes and the finished frame is handed to Minecraft
+;;    (game/mods/mc_frame_share.cpp), which draws it in place of its sky. Minecraft also has Jak's
+;;    level shape, so its blocks hide behind Jak's walls and Steve walks on Jak's ground with
+;;    Minecraft's own physics (Jak's collision became invisible barrier blocks).
+;;  - Jak and Daxter are gone: hidden, frozen (grabbed, no input, no physics of their own) and only
+;;    dragged along under Steve's feet so that levels, enemies and pickups keep loading around you.
+;;  - Blocks Steve places are sent back (BLOCKS packet): Jak's enemies have to walk around them,
+;;    and lava / fire / magma / cactus kill enemies that walk into them. Steve's punches and
+;;    Minecraft explosions (TNT, creepers) kill enemies too, and enemies hurt Steve.
 ;;
-;;  STEVE mode (default): Minecraft IS the game. You play Minecraft (Minecraft movement, blocks,
-;;    hotbar, mobs) inside Jak's world:
-;;    - Jak renders his world from Steve's eyes. The C++ renderer hands every finished frame to
-;;      Minecraft (game/mods/mc_frame_share.cpp), which draws it as its sky, so all Minecraft things
-;;      appear on top of Jak's world, in the Minecraft window.
-;;    - Jak's level collision was exported as .obj files and turned into invisible barrier blocks in
-;;      the Minecraft world, so Steve walks on Jak's ground with Minecraft physics.
-;;    - Jak himself is gone: hidden, frozen (grabbed) and dragged along under Steve's feet only so
-;;      that levels, enemies and pickups keep streaming in around you.
-;;    - Coordinates are fixed: Minecraft sends positions already in Jak meters (it applies the Y
-;;      offset it used when placing the collision blocks), and both worlds share axes.
-;;  BODY mode: Minecraft's keys drive Jak with Jak's physics, first person at Jak's head.
-;;  FREE mode: Minecraft's position drives a free-flying Jak camera.
-;;
-;; Coordinate notes:
-;;  - Minecraft: 1 block = 1 meter, +Y up, yaw 0 faces +Z, yaw 90 faces -X, pitch +90 looks down.
-;;  - Jak: 1 meter = 4096 units, +Y up. The perspective matrix flips camera-space X (see
-;;    update-math-camera, perspective vector 0 x is negative), so a camera looking down +Z has -X on
-;;    screen-right, exactly like Minecraft. Both worlds have the same handedness: no mirroring.
+;; Coordinates: Minecraft sends Jak meters (1 block = 1 meter, same axes, +Y up). Jak: 1 meter =
+;; 4096 units. Minecraft yaw 0 faces +Z and turns towards -X, so Jak heading = -yaw.
 ;;
 ;; REPL helpers: (mc-on) (mc-off) (mc-reanchor) (mc-status) (mc-debug #t/#f)
 
 (define-extern pc-mc-get-camera (function (pointer float) int))
 (define-extern pc-mc-send-state (function (pointer float) int))
 (define-extern pc-mc-pop-event (function (pointer float) int))
-(define-extern pc-mc-send-host (function (pointer float) int))
+(define-extern pc-mc-get-blocks (function pointer int int))
 
 (defconstant MC_RAW_X 0)
 (defconstant MC_RAW_Y 1)
@@ -52,24 +43,13 @@
 (defconstant MC_RAW_AGE_MS 6)
 (defconstant MC_RAW_SEQ 7)
 (defconstant MC_RAW_FLAGS 8)
-(defconstant MC_RAW_FORWARD 9)
-(defconstant MC_RAW_STRAFE 10)
 (defconstant MC_RAW_BUTTONS 11)
 
 ;; CAMERA packet flags (see PROTOCOL.md)
-(defconstant MC_FLAG_SCREEN_OPEN 2)
-(defconstant MC_FLAG_BODY_MODE 4)
 (defconstant MC_FLAG_STEVE_MODE 8)
-(defconstant MC_FLAG_JAK_MODE 16)
-
-;; mouse buttons from Jak's window (pc-mc-send-host)
-(defconstant MC_HOST_ATTACK 1)
 
 ;; CAMERA packet buttons
-(defconstant MC_BUTTON_JUMP 1)
-(defconstant MC_BUTTON_SNEAK 2)
 (defconstant MC_BUTTON_ATTACK 8)
-(defconstant MC_BUTTON_USE 16)
 
 ;; Minecraft -> Jak events (pc-mc-pop-event)
 (defconstant MC_EVENT_EXPLOSION 1)
@@ -78,43 +58,32 @@
 (defconstant MC_NO_WATER -100000.0)
 
 ;; JAK_STATE flags
-(defconstant JAK_STATE_FLAG_BODY 1)
 (defconstant JAK_STATE_FLAG_STEVE 2)
 
 (deftype mc-passthrough-state (structure)
   ((enabled?     symbol)    ;; master switch
-   (mode         symbol)    ;; 'steve, 'body, 'free, or #f when Jak is in control
-   (mirror-x?    symbol)    ;; flip left/right, should not be needed (see notes above)
-   (match-fov?   symbol)    ;; copy Minecraft's FOV (required for STEVE mode compositing)
-   (hide-jak?    symbol)    ;; hide Jak and Daxter in BODY / STEVE mode
+   (mode         symbol)    ;; 'steve while Minecraft is playing, #f otherwise
+   (match-fov?   symbol)    ;; copy Minecraft's FOV (required so the pictures line up)
    (debug?       symbol)    ;; print status to the screen
    (timeout-ms   float)     ;; packets older than this hand everything back to Jak
    (scale        float)     ;; jak units per Minecraft block
    (eye-height   float)     ;; Steve's eye height above his feet (jak units)
-   (yaw-offset   float)     ;; rotation units, set when anchoring (FREE / BODY)
    (activations  int32)
-   (parked?      symbol)    ;; STEVE: Jak has been moved under Steve at least once this activation
-   (steve-damage float)     ;; STEVE: total Minecraft health points of damage dealt to Steve
+   (parked?      symbol)    ;; Jak has been moved under Steve at least once this activation
+   (steve-damage float)     ;; total Minecraft health points of damage dealt to Steve
    (last-hit-time time-frame)
    (last-attack-time time-frame)
    (prev-buttons int32)
-   (melee-reach  float)     ;; STEVE: how far Steve's punch reaches (jak units)
-   (aspect-saved? symbol)   ;; STEVE: Jak's aspect settings were changed to match Minecraft
+   (melee-reach  float)     ;; how far Steve's punch reaches (jak units)
+   (aspect-saved? symbol)   ;; Jak's aspect settings were changed to match Minecraft
    (saved-aspect-auto? symbol)
    (saved-use-vis? symbol)
    (saved-aspect-x int32)
    (saved-aspect-y int32)
    (event        float 5)
-   (host         float 10)  ;; JAK mode: camera + body sent to Minecraft
-   (look-yaw     float)     ;; JAK mode first-person look (Jak heading, rotation units)
-   (look-pitch   float)     ;; JAK mode, degrees, + = down (Minecraft convention)
-   (look-speed   float)     ;; JAK mode, degrees per second at full right-stick / mouse
-   (prev-host-buttons int32)
    (raw          float 12)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
    (out          float 8)   ;; JAK_STATE payload
-   (anchor-mc    vector :inline)
-   (anchor-jak   vector :inline)
-   (spawn        vector :inline) ;; STEVE: where Jak was when Steve took over (jak units)
+   (spawn        vector :inline) ;; where Jak was when Steve took over (jak units)
    (pos          vector :inline)
    (fwd          vector :inline)))
 
@@ -123,26 +92,16 @@
        'mc-passthrough-state
        :enabled? #t
        :mode #f
-       :mirror-x? #f
        :match-fov? #t
-       :hide-jak? #t
        :debug? #f
        :timeout-ms 250.0
        :scale (meters 1.0)
        :eye-height (meters 1.62)
-       :melee-reach (meters 4.5)
-       :look-speed 240.0))
+       :melee-reach (meters 4.5)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(define-extern mc-restore-aspect! (function mc-passthrough-state none))
-(define-extern mc-jak-grabbed? (function symbol))
-
-(defun mc-yaw->jak-heading ((st mc-passthrough-state) (yaw-deg float))
-  "Convert a Minecraft yaw (degrees) to a Jak heading (rotation units, as (atan x z))."
-  (if (-> st mirror-x?) (degrees yaw-deg) (- (degrees yaw-deg))))
 
 (defun mc-packet-fresh? ((st mc-passthrough-state))
   "Read the newest packet into (-> st raw). #t if Minecraft is connected right now."
@@ -151,24 +110,8 @@
 (defun mc-packet-flag? ((st mc-passthrough-state) (flag int))
   (logtest? (the int (-> st raw MC_RAW_FLAGS)) flag))
 
-(defun mc-requested-mode ((st mc-passthrough-state))
-  "The mode Minecraft asks for. #f if it needs Jak but there is no Jak yet (title screen, loading)."
-  (cond
-    ;; JAK mode steps aside for cutscenes and anything else that takes control of Jak
-    ((mc-packet-flag? st MC_FLAG_JAK_MODE)
-     (if (and *target* (not (movie?)) (not (mc-jak-grabbed?))) 'jak #f))
-    ((mc-packet-flag? st MC_FLAG_STEVE_MODE) (if *target* 'steve #f))
-    ((mc-packet-flag? st MC_FLAG_BODY_MODE) (if *target* 'body #f))
-    (else 'free)))
-
-(defun mc-jak-eye! ((dst vector) (st mc-passthrough-state))
-  "Jak's feet plus eye height."
-  (set! (-> dst quad) (-> *target* control trans quad))
-  (+! (-> dst y) (-> st eye-height))
-  dst)
-
 (defun mc-set-jak-hidden! ((hidden symbol))
-  "Hide or show Jak and Daxter (first person)."
+  "Hide or show Jak and Daxter."
   (when *target*
     (if hidden
       (logior! (-> *target* draw status) (draw-status hidden))
@@ -182,60 +125,8 @@
 (defun mc-jak-grabbed? ()
   (if (and *target* (logtest? (-> *target* state-flags) (state-flags grabbed))) #t #f))
 
-(defun mc-passthrough-activate! ((st mc-passthrough-state) (mode symbol))
-  "Start a mode. FREE/BODY lock the current Minecraft pose to Jak's current pose; STEVE uses fixed
-   coordinates and freezes Jak."
-  (set-vector! (-> st anchor-mc) (-> st raw MC_RAW_X) (-> st raw MC_RAW_Y) (-> st raw MC_RAW_Z) 1.0)
-  ;; heading: prefer the real game camera (it keeps updating behind our override).
-  (let ((jak-fwd (if *camera-combiner*
-                   (-> *camera-combiner* inv-camera-rot vector 2)
-                   (-> *math-camera* inv-camera-rot vector 2))))
-    (set! (-> st yaw-offset)
-          (- (atan (-> jak-fwd x) (-> jak-fwd z)) (mc-yaw->jak-heading st (-> st raw MC_RAW_YAW)))))
-  (case mode
-    (('steve)
-     ;; fixed coordinates: no anchor, no yaw offset. Remember where Jak stood so Minecraft can put
-     ;; Steve there.
-     (set! (-> st yaw-offset) 0.0)
-     (set! (-> st spawn quad) (-> *target* control trans quad))
-     (set! (-> st parked?) #f)
-     (send-event *target* 'change-mode 'grab))
-    (('body) (mc-jak-eye! (-> st anchor-jak) st))
-    (('jak)
-     ;; first person, looking where Jak's camera looked; the mouse / right stick turns it.
-     (set! (-> st look-yaw) (+ (-> st yaw-offset) (mc-yaw->jak-heading st (-> st raw MC_RAW_YAW))))
-     (set! (-> st look-pitch) 0.0)
-     (set! (-> st prev-host-buttons) 0)
-     ;; the mouse moves the camera (OpenGOAL turns it into right-stick input)
-     (pc-set-mouse-options! #t #t (-> *pc-settings* mouse-movement?)))
-    (else
-     (if *camera-combiner*
-       (set! (-> st anchor-jak quad) (-> *camera-combiner* trans quad))
-       (set! (-> st anchor-jak quad) (-> *math-camera* trans quad)))))
-  (set! (-> st mode) mode)
-  (+! (-> st activations) 1)
-  (format 0 "[mc-passthrough] ~A mode (activation ~D): mc ~,,2f ~,,2f ~,,2f~%"
-          mode (-> st activations) (-> st anchor-mc x) (-> st anchor-mc y) (-> st anchor-mc z))
-  (none))
-
-(defun mc-passthrough-release! ((st mc-passthrough-state))
-  "Hand everything back to Jak."
-  (when (-> st mode)
-    (when (or (= (-> st mode) 'body) (= (-> st mode) 'steve) (= (-> st mode) 'jak))
-      (mc-set-jak-hidden! #f))
-    (if (= (-> st mode) 'jak) (update-mouse-controls! *pc-settings*))
-    (if (and (= (-> st mode) 'steve) (mc-jak-grabbed?)) (send-event *target* 'end-mode))
-    (mc-restore-aspect! st)
-    (format 0 "[mc-passthrough] camera returned to Jak~%"))
-  (set! (-> st mode) #f)
-  (none))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; STEVE mode gameplay: aspect, fighting, getting hurt, water, explosions
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
 (defun mc-restore-aspect! ((st mc-passthrough-state))
-  "Put Jak's aspect ratio settings back the way they were before STEVE mode."
+  "Put Jak's aspect ratio settings back the way they were before Minecraft took over."
   (when (-> st aspect-saved?)
     (cond
       ((-> st saved-aspect-auto?) (set! (-> *pc-settings* aspect-ratio-auto?) #t))
@@ -259,6 +150,30 @@
             (set! (-> st aspect-saved?) #t))
           (set-aspect! *pc-settings* mc-aspect-1000 1000)))))
   (none))
+
+(defun mc-passthrough-activate! ((st mc-passthrough-state))
+  "Minecraft takes over: remember where Jak stood (Minecraft puts Steve there) and freeze Jak."
+  (set! (-> st spawn quad) (-> *target* control trans quad))
+  (set! (-> st parked?) #f)
+  (send-event *target* 'change-mode 'grab)
+  (set! (-> st mode) 'steve)
+  (+! (-> st activations) 1)
+  (format 0 "[mc-passthrough] Minecraft took over (activation ~D)~%" (-> st activations))
+  (none))
+
+(defun mc-passthrough-release! ((st mc-passthrough-state))
+  "Minecraft went away: give Jak back."
+  (when (-> st mode)
+    (mc-set-jak-hidden! #f)
+    (if (mc-jak-grabbed?) (send-event *target* 'end-mode))
+    (mc-restore-aspect! st)
+    (format 0 "[mc-passthrough] Minecraft disconnected, Jak is back~%"))
+  (set! (-> st mode) #f)
+  (none))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; fighting Jak's enemies, getting hurt, water, explosions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun mc-enemy? ((p process))
   "A living Jak enemy that can be killed."
@@ -331,7 +246,7 @@
   (none))
 
 (defun mc-steve-attacked ((msg symbol) (info attack-info))
-  "Hook from target-attacked: in STEVE mode, attacks on the hidden Jak hurt Steve instead.
+  "Hook from target-attacked: while Minecraft is playing, attacks on the hidden Jak hurt Steve.
    Returns #t if the attack was taken by Steve."
   (let ((st *mc-passthrough*))
     (cond
@@ -354,206 +269,116 @@
     (/ (-> *target* water base-height) (-> st scale))
     MC_NO_WATER))
 
-(defun mc-passthrough-steve-gameplay! ((st mc-passthrough-state))
-  "STEVE mode, every frame."
-  (mc-sync-aspect! st)
-  (mc-process-events! st)
-  (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
-    ;; punch on click, and keep punching every 0.35 s while held
-    (when (and (logtest? buttons MC_BUTTON_ATTACK)
-               (or (not (logtest? (-> st prev-buttons) MC_BUTTON_ATTACK))
-                   (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
-      (set-time! (-> st last-attack-time))
-      (mc-steve-melee! st))
-    (set! (-> st prev-buttons) buttons))
-  (none))
-
-(defun mc-stick-axis ((v uint))
-  "PS2 stick byte (0..255, 128 centre) to -1..1 with a small deadzone."
-  (let ((f (/ (the float (- (the int v) 128)) 127.0)))
-    (if (< (fabs f) 0.12) 0.0 (fmax -1.0 (fmin 1.0 f)))))
-
-(defun mc-passthrough-jak-look! ((st mc-passthrough-state))
-  "JAK mode: turn the first-person view with the mouse / right stick of controller 0."
-  (let* ((pad (-> *cpad-list* cpads 0))
-         (dt (seconds-per-frame))
-         (rate (* (-> st look-speed) dt)))
-    ;; stick right = turn right (Jak heading decreases, like Minecraft yaw increasing)
-    (-! (-> st look-yaw) (degrees (* rate (mc-stick-axis (-> pad rightx)))))
-    ;; stick down = look down (Minecraft pitch increases)
-    (set! (-> st look-pitch) (fmax -89.5 (fmin 89.5 (+ (-> st look-pitch) (* rate (mc-stick-axis (-> pad righty))))))))
-  (none))
-
-(defun mc-passthrough-jak-gameplay! ((st mc-passthrough-state))
-  "JAK mode, every frame after the pose is known: send camera + body to Minecraft, punch on click."
-  (mc-sync-aspect! st)
-  (mc-process-events! st)
-  (let ((inv-s (/ 1.0 (-> st scale)))
-        (feet (new 'stack-no-clear 'vector)))
-    (set! (-> feet quad) (-> *target* control trans quad))
-    (set! (-> st host 0) (* inv-s (-> st pos x)))
-    (set! (-> st host 1) (* inv-s (-> st pos y)))
-    (set! (-> st host 2) (* inv-s (-> st pos z)))
-    ;; Minecraft yaw = -heading (see mc-yaw->jak-heading), wrapped to -180..180
-    (let ((yaw (* (/ 360.0 DEGREES_PER_ROT) (- (-> st look-yaw)))))
-      (while (< 180.0 yaw) (-! yaw 360.0))
-      (while (< yaw -180.0) (+! yaw 360.0))
-      (set! (-> st host 3) yaw))
-    (set! (-> st host 4) (-> st look-pitch))
-    (set! (-> st host 5) (* inv-s (-> feet x)))
-    (set! (-> st host 6) (* inv-s (-> feet y)))
-    (set! (-> st host 7) (* inv-s (-> feet z)))
-    (set! (-> st host 8) (-> st raw MC_RAW_VFOV))
-    (set! (-> st host 9) 0.0))
-  (let ((buttons (pc-mc-send-host (&-> st host 0))))
-    ;; left click: Steve's sword hits the Jak enemy in front of him (Minecraft breaks blocks too)
-    (when (and (logtest? buttons MC_HOST_ATTACK)
-               (or (not (logtest? (-> st prev-host-buttons) MC_HOST_ATTACK))
-                   (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
-      (set-time! (-> st last-attack-time))
-      (mc-steve-melee! st))
-    (set! (-> st prev-host-buttons) buttons))
-  (none))
-
 (set! *mc-passthrough-attack-hook* mc-steve-attacked)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; controller injection (BODY mode, called from service-cpads)
+;; Minecraft blocks in Jak's world
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun mc-buttons->pad ((mc-buttons int))
-  "Minecraft actions -> Jak buttons: jump=X, sneak=R1 (crouch/roll), attack=square (punch),
-   use=circle (spin kick)."
-  (let ((out 0))
-    (if (logtest? mc-buttons MC_BUTTON_JUMP) (set! out (logior out (pad-buttons x))))
-    (if (logtest? mc-buttons MC_BUTTON_SNEAK) (set! out (logior out (pad-buttons r1))))
-    (if (logtest? mc-buttons MC_BUTTON_ATTACK) (set! out (logior out (pad-buttons square))))
-    (if (logtest? mc-buttons MC_BUTTON_USE) (set! out (logior out (pad-buttons circle))))
-    out))
+;; Minecraft sends the blocks the player built near Steve (BLOCKS packet): x, y, z (Jak meters,
+;; block corner) and kind, 4 x int32 each.
+(defconstant MC_MAX_BLOCKS 2048)
+(defconstant MC_BLOCK_SOLID 1)
+(defconstant MC_BLOCK_DEADLY 2)
 
-(defun mc-passthrough-inject-pad! ((pad cpad-info))
-  "Feed Minecraft's movement keys into controller 0 while in BODY mode.
-   A real controller keeps working: buttons are OR'd in, and the stick is only overridden
-   while a movement key is held."
-  (let ((st *mc-passthrough*))
-    (when (and (-> st enabled?)
-               (mc-packet-fresh? st)
-               (= (mc-requested-mode st) 'body)
-               (not (mc-packet-flag? st MC_FLAG_SCREEN_OPEN)))
-      (let ((fwd (fmax -1.0 (fmin 1.0 (-> st raw MC_RAW_FORWARD))))
-            (strafe (fmax -1.0 (fmin 1.0 (-> st raw MC_RAW_STRAFE)))))
-        ;; keep diagonals at full speed, not faster
-        (let ((len (sqrtf (+ (* fwd fwd) (* strafe strafe)))))
-          (when (< 1.0 len)
-            (set! fwd (/ fwd len))
-            (set! strafe (/ strafe len))))
-        ;; the stick is only read for a valid dualshock (status #x7?), so make sure we look like one.
-        (set! (-> pad valid) (the-as uint 0))
-        (set! (-> pad status) (the-as uint #x73))
-        (when (or (!= fwd 0.0) (!= strafe 0.0))
-          ;; PS2 sticks: 0 = left/up, 128 = centre, 255 = right/down
-          (set! (-> pad leftx) (the-as uint (+ 128 (the int (* 127.0 strafe)))))
-          (set! (-> pad lefty) (the-as uint (- 128 (the int (* 127.0 fwd))))))
-        (set! (-> pad button0) (the-as uint (logior (-> pad button0) (mc-buttons->pad (the int (-> st raw MC_RAW_BUTTONS)))))))))
+(define *mc-block-data* (new 'global 'array 'int32 (* 4 MC_MAX_BLOCKS)))
+(define *mc-block-count* 0)
+
+(defun mc-refresh-blocks! ()
+  (set! *mc-block-count* (pc-mc-get-blocks (the-as pointer (&-> *mc-block-data* 0)) MC_MAX_BLOCKS))
   (none))
 
-(set! *mc-passthrough-pad-hook* mc-passthrough-inject-pad!)
+(defun mc-block-center! ((dst vector) (i int))
+  "Centre of block i, Jak units."
+  (set-vector! dst
+               (* METER_LENGTH (+ 0.5 (the float (-> *mc-block-data* (* i 4)))))
+               (* METER_LENGTH (+ 0.5 (the float (-> *mc-block-data* (+ (* i 4) 1)))))
+               (* METER_LENGTH (+ 0.5 (the float (-> *mc-block-data* (+ (* i 4) 2)))))
+               1.0)
+  dst)
+
+(defun mc-nav-add-blocks ((nav nav-control))
+  "Hook from nav-control-method-28 (every frame, per enemy): solid Minecraft blocks near this
+   enemy, at its body height, become obstacles it has to walk around. Walls of blocks stop them.
+   An enemy only has room for a few obstacles (usually 16), so the closest blocks go in first."
+  (when (and (= (-> *mc-passthrough* mode) 'steve) (< 0 *mc-block-count*) (-> nav shape) (-> nav mesh))
+    (let ((pos (-> nav shape trans))
+          (sphere (new 'stack-no-clear 'vector))
+          (inner 0.0))
+      ;; three rings: 0-3 m, 3-6 m, 6-11 m (add-nav-sphere ignores anything past ~11 m anyway)
+      (dotimes (ring 3)
+        (let ((outer (meters (the float (case ring ((0) 3) ((1) 6) (else 11))))))
+          (dotimes (i *mc-block-count*)
+            (when (and (logtest? (-> *mc-block-data* (+ (* i 4) 3)) MC_BLOCK_SOLID)
+                       (< (-> nav num-spheres) (-> nav max-spheres)))
+              (mc-block-center! sphere i)
+              (when (and (< (- (-> pos y) (meters 1.0)) (-> sphere y))
+                         (< (-> sphere y) (+ (-> pos y) (meters 2.5))))
+                (let ((d (vector-vector-xz-distance sphere pos)))
+                  (when (and (<= inner d) (< d outer))
+                    (set! (-> sphere w) (meters 0.75))
+                    (add-nav-sphere nav sphere))))))
+          (set! inner outer)))))
+  (none))
+
+(defun mc-deadly-blocks! ()
+  "Lava, fire, magma, cactus... placed by Steve kill Jak's enemies that walk into them."
+  (when (< 0 *mc-block-count*)
+    (iterate-process-tree
+      *active-pool*
+      (lambda ((p process))
+        (when (mc-enemy? p)
+          (let ((epos (-> (the-as nav-enemy p) collide-info trans))
+                (c (new 'stack-no-clear 'vector))
+                (hit #f))
+            (dotimes (i *mc-block-count*)
+              (when (and (not hit) (logtest? (-> *mc-block-data* (+ (* i 4) 3)) MC_BLOCK_DEADLY))
+                (mc-block-center! c i)
+                (-! (-> c y) (meters 0.5)) ;; compare feet with the block's bottom
+                (if (< (vector-vector-distance c epos) (meters 1.3)) (set! hit #t))))
+            (if hit (mc-kill-enemy! p))))
+        #f)
+      *kernel-context*))
+  (none))
+
+(set! *mc-passthrough-nav-hook* mc-nav-add-blocks)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; camera (called from update-camera)
+;; every frame (called from update-camera)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun mc-passthrough-poll ()
-  "Fetch the newest Minecraft packet. Returns #t if Minecraft should drive the camera this frame."
+  "Fetch the newest Minecraft packet. Returns #t if Minecraft is playing this frame."
   (let ((st *mc-passthrough*))
     (cond
       ((not (-> st enabled?)) (mc-passthrough-release! st))
       ((not (mc-packet-fresh? st)) (mc-passthrough-release! st))
-      (else
-       (let ((want (mc-requested-mode st)))
-         (cond
-           ((not want) (mc-passthrough-release! st))
-           ((!= want (-> st mode))
-            (mc-passthrough-release! st)
-            (mc-passthrough-activate! st want))))))
+      ;; no Jak yet (title screen, loading a save): nothing to take over
+      ((not *target*) (mc-passthrough-release! st))
+      ((not (-> st mode)) (mc-passthrough-activate! st)))
     (if (-> st mode) #t #f)))
 
 (defun mc-passthrough-compute-pose! ((st mc-passthrough-state))
-  "Compute (-> st pos) and (-> st fwd) in Jak space."
-  (let* ((heading (+ (mc-yaw->jak-heading st (-> st raw MC_RAW_YAW)) (-> st yaw-offset)))
+  "Steve's eyes and look direction in Jak space."
+  (let* ((heading (- (degrees (-> st raw MC_RAW_YAW))))
          ;; clamp so forward is never parallel to down (forward-down->inv-matrix would divide by 0)
          (pitch (degrees (fmax -89.5 (fmin 89.5 (-> st raw MC_RAW_PITCH)))))
          (cp (cos pitch))
          (sp (sin pitch)))
-    (when (= (-> st mode) 'jak)
-      (set! heading (-> st look-yaw))
-      (set! pitch (degrees (fmax -89.5 (fmin 89.5 (-> st look-pitch)))))
-      (set! cp (cos pitch))
-      (set! sp (sin pitch)))
-    (case (-> st mode)
-      (('jak)
-       ;; Jak's physics decides where we are; eyes at Steve's height above Jak's feet.
-       (mc-jak-eye! (-> st pos) st))
-      (('steve)
-       ;; Minecraft already sends Jak-space meters.
-       (set-vector! (-> st pos)
-                    (* (-> st scale) (-> st raw MC_RAW_X))
-                    (* (-> st scale) (-> st raw MC_RAW_Y))
-                    (* (-> st scale) (-> st raw MC_RAW_Z))
-                    1.0))
-      (('body)
-       ;; Jak's physics decides where we are.
-       (mc-jak-eye! (-> st pos) st)
-       (if (logtest? (the int (-> st raw MC_RAW_BUTTONS)) MC_BUTTON_SNEAK) (-! (-> st pos y) (meters 0.35))))
-      (else
-       ;; FREE: rotate the Minecraft displacement about +Y by yaw-offset, scale, add to the anchor.
-       (let ((dx (- (-> st raw MC_RAW_X) (-> st anchor-mc x)))
-             (dy (- (-> st raw MC_RAW_Y) (-> st anchor-mc y)))
-             (dz (- (-> st raw MC_RAW_Z) (-> st anchor-mc z)))
-             (co (cos (-> st yaw-offset)))
-             (so (sin (-> st yaw-offset)))
-             (s (-> st scale)))
-         (if (-> st mirror-x?) (set! dx (- dx)))
-         (set! (-> st pos x) (+ (-> st anchor-jak x) (* s (+ (* dx co) (* dz so)))))
-         (set! (-> st pos y) (+ (-> st anchor-jak y) (* s dy)))
-         (set! (-> st pos z) (+ (-> st anchor-jak z) (* s (- (* dz co) (* dx so))))))))
-    (set! (-> st pos w) 1.0)
+    (set-vector! (-> st pos)
+                 (* (-> st scale) (-> st raw MC_RAW_X))
+                 (* (-> st scale) (-> st raw MC_RAW_Y))
+                 (* (-> st scale) (-> st raw MC_RAW_Z))
+                 1.0)
     ;; Minecraft pitch is positive looking down, Jak +Y is up.
     (set-vector! (-> st fwd) (* (sin heading) cp) (- sp) (* (cos heading) cp) 0.0))
   (none))
 
-(defun mc-passthrough-body-state! ((st mc-passthrough-state))
-  "BODY mode: tell Minecraft where Jak's eyes are, in Minecraft coordinates (inverse of FREE mode)."
-  (let* ((jx (- (-> st pos x) (-> st anchor-jak x)))
-         (jy (- (-> st pos y) (-> st anchor-jak y)))
-         (jz (- (-> st pos z) (-> st anchor-jak z)))
-         (co (cos (-> st yaw-offset)))
-         (so (sin (-> st yaw-offset)))
-         (inv-s (/ 1.0 (-> st scale)))
-         (mx (* inv-s (- (* jx co) (* jz so))))
-         (mz (* inv-s (+ (* jx so) (* jz co)))))
-    (if (-> st mirror-x?) (set! mx (- mx)))
-    (set! (-> st out 0) (+ (-> st anchor-mc x) mx))
-    (set! (-> st out 1) (+ (-> st anchor-mc y) (* inv-s jy)))
-    (set! (-> st out 2) (+ (-> st anchor-mc z) mz))
-    (set! (-> st out 5) (the float JAK_STATE_FLAG_BODY)))
-  (none))
-
-(defun mc-passthrough-steve-state! ((st mc-passthrough-state))
-  "STEVE mode: tell Minecraft where Jak was when Steve took over (Jak meters), so it can put Steve
-   there once per activation."
-  (let ((inv-s (/ 1.0 (-> st scale))))
-    (set! (-> st out 0) (* inv-s (-> st spawn x)))
-    (set! (-> st out 1) (* inv-s (-> st spawn y)))
-    (set! (-> st out 2) (* inv-s (-> st spawn z))))
-  (set! (-> st out 5) (the float JAK_STATE_FLAG_STEVE))
-  (none))
-
-(defun mc-passthrough-steve-park-jak! ((st mc-passthrough-state))
-  "STEVE mode: Jak is frozen and dragged along under Steve's feet, so levels, actors and pickups
-   keep streaming around Steve. He is hidden, grabbed (no input, invulnerable) and never moves on
-   his own."
+(defun mc-passthrough-park-jak! ((st mc-passthrough-state))
+  "Jak is frozen and dragged along under Steve's feet, so levels, actors and pickups keep
+   streaming around Steve. He is hidden, grabbed (no input, invulnerable) and never moves on his own."
   (when *target*
+    (mc-set-jak-hidden! #t)
     (if (not (mc-jak-grabbed?)) (send-event *target* 'change-mode 'grab))
     (let ((feet (new 'stack-no-clear 'vector)))
       (set! (-> feet quad) (-> st pos quad))
@@ -566,10 +391,25 @@
         (set! (-> *target* control transv quad) (the-as uint128 0)))))
   (none))
 
+(defun mc-passthrough-gameplay! ((st mc-passthrough-state))
+  "Everything Minecraft does to Jak's world this frame."
+  (mc-sync-aspect! st)
+  (mc-process-events! st)
+  (mc-refresh-blocks!)
+  (mc-deadly-blocks!)
+  (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
+    ;; punch on click, and keep punching every 0.35 s while held
+    (when (and (logtest? buttons MC_BUTTON_ATTACK)
+               (or (not (logtest? (-> st prev-buttons) MC_BUTTON_ATTACK))
+                   (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
+      (set-time! (-> st last-attack-time))
+      (mc-steve-melee! st))
+    (set! (-> st prev-buttons) buttons))
+  (none))
+
 (defun mc-passthrough-apply! ((mcam math-camera))
-  "Overwrite the math camera with the Minecraft view. Called from update-camera."
+  "Put Jak's camera at Steve's eyes, run the Minecraft-side gameplay and report back."
   (let ((st *mc-passthrough*))
-    (if (= (-> st mode) 'jak) (mc-passthrough-jak-look! st))
     (mc-passthrough-compute-pose! st)
     (set! (-> mcam trans quad) (-> st pos quad))
     (forward-down->inv-matrix (-> mcam inv-camera-rot) (-> st fwd) (new 'static 'vector :y -1.0))
@@ -584,37 +424,26 @@
           (update-math-camera mcam (-> *setting-control* current video-mode) (-> *setting-control* current aspect-ratio)))))
     ;; never blend toward a stale Jak orientation while Minecraft is driving.
     (set! (-> mcam smooth-t) 0.0)
-    ;; Jak -> Minecraft state
-    (set! (-> st out 0) 0.0)
-    (set! (-> st out 1) 0.0)
-    (set! (-> st out 2) 0.0)
+    (mc-passthrough-park-jak! st)
+    (mc-passthrough-gameplay! st)
+    ;; Jak -> Minecraft state (see JAK_STATE in PROTOCOL.md)
+    (let ((inv-s (/ 1.0 (-> st scale))))
+      (set! (-> st out 0) (* inv-s (-> st spawn x)))
+      (set! (-> st out 1) (* inv-s (-> st spawn y)))
+      (set! (-> st out 2) (* inv-s (-> st spawn z))))
     (set! (-> st out 3) (-> st steve-damage))
     (set! (-> st out 4) (if *target* (-> *target* fact health) 0.0))
-    (set! (-> st out 5) 0.0)
+    (set! (-> st out 5) (the float JAK_STATE_FLAG_STEVE))
     (set! (-> st out 6) (the float (-> st activations)))
-    (set! (-> st out 7) MC_NO_WATER)
-    (case (-> st mode)
-      (('steve)
-       (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
-       (mc-passthrough-steve-park-jak! st)
-       (mc-passthrough-steve-gameplay! st)
-       (mc-passthrough-steve-state! st)
-       (set! (-> st out 7) (mc-water-surface st)))
-      (('body)
-       (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
-       (mc-passthrough-body-state! st))
-      (('jak)
-       (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
-       (mc-passthrough-jak-gameplay! st)))
+    (set! (-> st out 7) (mc-water-surface st))
     (pc-mc-send-state (&-> st out 0))
     (when (-> st debug?)
       ;; GOAL calls are limited to 8 arguments, so this is split up.
-      (format *stdcon* "mc ~A seq ~D age ~,,1fms fov ~,,1f~%" (-> st mode) (the int (-> st raw MC_RAW_SEQ)) (-> st raw MC_RAW_AGE_MS) (-> st raw MC_RAW_VFOV))
+      (format *stdcon* "mc seq ~D age ~,,1fms fov ~,,1f blocks ~D~%" (the int (-> st raw MC_RAW_SEQ)) (-> st raw MC_RAW_AGE_MS) (-> st raw MC_RAW_VFOV) *mc-block-count*)
       (format *stdcon*
               "mc ~,,2f ~,,2f ~,,2f yaw ~,,1f pitch ~,,1f~%"
               (-> st raw MC_RAW_X) (-> st raw MC_RAW_Y) (-> st raw MC_RAW_Z)
               (-> st raw MC_RAW_YAW) (-> st raw MC_RAW_PITCH))
-      (format *stdcon* "input fwd ~,,2f strafe ~,,2f buttons ~D~%" (-> st raw MC_RAW_FORWARD) (-> st raw MC_RAW_STRAFE) (the int (-> st raw MC_RAW_BUTTONS)))
       (format *stdcon* "cam ~,,2M ~,,2M ~,,2M~%" (-> st pos x) (-> st pos y) (-> st pos z))))
   (none))
 
@@ -631,7 +460,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun mc-on ()
-  "Let Minecraft drive whenever it is connected."
+  "Let Minecraft take over whenever it is connected."
   (set! (-> *mc-passthrough* enabled?) #t)
   (none))
 
@@ -642,7 +471,7 @@
   (none))
 
 (defun mc-reanchor ()
-  "Restart the current mode (FREE/BODY re-lock to Jak, STEVE re-sends the spawn point)."
+  "Start over: Jak's current position becomes the spawn point Minecraft puts Steve on."
   (mc-passthrough-release! *mc-passthrough*)
   (none))
 
@@ -655,7 +484,7 @@
   "Print the bridge status to the REPL."
   (let ((st *mc-passthrough*))
     (pc-mc-get-camera (&-> st raw 0))
-    (format #t "enabled ~A mode ~A activations ~D~%" (-> st enabled?) (-> st mode) (-> st activations))
+    (format #t "enabled ~A mode ~A activations ~D blocks ~D~%" (-> st enabled?) (-> st mode) (-> st activations) *mc-block-count*)
     (format #t "last packet: seq ~D age ~,,1fms vfov ~,,1f flags ~D~%" (the int (-> st raw MC_RAW_SEQ)) (-> st raw MC_RAW_AGE_MS) (-> st raw MC_RAW_VFOV) (the int (-> st raw MC_RAW_FLAGS)))
     (format #t
             "mc pos ~,,2f ~,,2f ~,,2f yaw ~,,1f pitch ~,,1f~%"

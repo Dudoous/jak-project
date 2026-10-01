@@ -24,7 +24,6 @@
 #include "game/graphics/opengl_renderer/OpenGLRenderer.h"
 #include "game/graphics/opengl_renderer/debug_gui.h"
 #include "game/graphics/screenshot.h"
-#include "game/mods/mc_overlay.h"
 #include "game/graphics/texture/TexturePool.h"
 #include "game/runtime.h"
 #include "game/sce/libscf.h"
@@ -581,8 +580,6 @@ void GLDisplay::process_sdl_events() {
       auto p = scoped_prof("sdl-input-monitor-process-event");
       m_input_manager->process_sdl_event(evt);
     }
-    // Minecraft passthrough (JAK mode): forward clicks / wheel / 1-9 to Minecraft
-    mc_passthrough::on_sdl_event(evt);
   }
 }
 

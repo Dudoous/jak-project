@@ -179,7 +179,7 @@
     (if a0-2 (set! (-> arg0 quad) (-> a0-2 intersect quad)) (get-middle-of-bsphere-overlap arg1 arg0)))
   arg0)
 
-;; og:preserve-this Minecraft passthrough mod: set by pc/features/mc-passthrough.gc. In STEVE mode,
+;; og:preserve-this Minecraft passthrough mod: set by pc/features/mc-passthrough.gc. While Minecraft is playing,
 ;; attacks on the (hidden) Jak hurt Steve instead; the hook returns #t when it took the attack.
 (define *mc-passthrough-attack-hook* (the-as (function symbol attack-info symbol) #f))
 

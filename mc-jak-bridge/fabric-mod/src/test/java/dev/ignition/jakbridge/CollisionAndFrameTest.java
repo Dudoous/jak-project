@@ -58,26 +58,6 @@ class CollisionAndFrameTest {
     }
 
     @Test
-    void minecraftFrameWriterProducesTheHeaderJakExpects() throws Exception {
-        Path f = Files.createTempFile("mcframe", ".bin");
-        try (McFrameWriter w = new McFrameWriter(f)) {
-            ByteBuffer px = w.begin(3, 2);
-            assertNotNull(px);
-            assertEquals(24, px.remaining());
-            for (int i = 0; i < 24; i++) px.put((byte) i);
-            w.end();
-            assertNull(w.begin(5000, 10), "too big for the shared buffer");
-        }
-        ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(f)).order(ByteOrder.LITTLE_ENDIAN);
-        assertEquals(McFrameWriter.MAGIC, b.getInt(0));
-        assertEquals(1, b.getInt(4));
-        assertEquals(0, b.getInt(8) & 1, "seq is even = frame complete");
-        assertEquals(3, b.getInt(12));
-        assertEquals(2, b.getInt(16));
-        assertEquals(23, b.get(64 + 23));
-    }
-
-    @Test
     void frameReaderReadsCompleteFramesOnce() throws Exception {
         Path f = Files.createTempFile("frame", ".bin");
         ByteBuffer b = ByteBuffer.allocate(64 + 2 * 2 * 4).order(ByteOrder.LITTLE_ENDIAN);

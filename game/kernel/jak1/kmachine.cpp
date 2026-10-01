@@ -19,7 +19,6 @@
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
 #include "game/graphics/sceGraphicsInterface.h"
-#include "game/mods/mc_passthrough.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/kdgo.h"
@@ -38,6 +37,7 @@
 #include "game/kernel/jak1/klisten.h"
 #include "game/kernel/jak1/kscheme.h"
 #include "game/kernel/jak1/ksound.h"
+#include "game/mods/mc_passthrough.h"
 #include "game/sce/deci2.h"
 #include "game/sce/libcdvd_ee.h"
 #include "game/sce/libdma.h"
@@ -563,7 +563,7 @@ void InitMachine_PCPort() {
   make_function_symbol_from_c("pc-mc-get-camera", (void*)mc_passthrough::goal_get_camera);
   make_function_symbol_from_c("pc-mc-send-state", (void*)mc_passthrough::goal_send_state);
   make_function_symbol_from_c("pc-mc-pop-event", (void*)mc_passthrough::goal_pop_event);
-  make_function_symbol_from_c("pc-mc-send-host", (void*)mc_passthrough::goal_send_host);
+  make_function_symbol_from_c("pc-mc-get-blocks", (void*)mc_passthrough::goal_get_blocks);
   mc_passthrough::start();
 
   // setup string constants

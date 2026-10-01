@@ -1247,6 +1247,10 @@
     0)
   (none))
 
+;; og:preserve-this Minecraft passthrough mod: set by pc/features/mc-passthrough.gc to add the
+;; Minecraft blocks near an enemy as nav spheres it must walk around. #f until that file loads.
+(define *mc-passthrough-nav-hook* (the-as (function nav-control none) #f))
+
 (defmethod nav-control-method-28 ((this nav-control) (arg0 collide-kind))
   (set! (-> this num-spheres) 0)
   (let ((s4-0 (-> this mesh user-list))
@@ -1329,6 +1333,8 @@
                 0))))
         (set! v1-71 s2-2)
         (set! s2-2 (-> s2-2 next0)))))
+  ;; og:preserve-this Minecraft passthrough: blocks Steve built are obstacles for Jak's enemies
+  (if *mc-passthrough-nav-hook* (*mc-passthrough-nav-hook* this))
   0
   (none))
 

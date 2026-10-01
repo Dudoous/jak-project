@@ -22,16 +22,19 @@ constexpr u16 kVersion = 1;
 constexpr u16 kTypeCamera = 1;    // Minecraft -> Jak
 constexpr u16 kTypeJakState = 2;  // Jak -> Minecraft
 constexpr u16 kTypeEvent = 3;     // Minecraft -> Jak, gameplay events (explosions, ...)
-constexpr u16 kTypeHost = 4;      // Jak -> Minecraft, JAK mode: camera, body, input
+// type 4 is unused (was an experimental mode)
+constexpr u16 kTypeBlocks = 5;  // Minecraft -> Jak, blocks the player built near Steve
+constexpr int kMaxBlocks = 2048;
+// block kinds (bit flags)
+constexpr u32 kBlockSolid = 1;   // stops Jak's enemies
+constexpr u32 kBlockDeadly = 2;  // lava, fire, magma, cactus...: kills Jak's enemies touching it
 constexpr u32 kEventExplosion = 1;
 constexpr int kDefaultPort = 47800;
 
 // CAMERA packet flags
 constexpr u32 kFlagInWorld = 1;
 constexpr u32 kFlagScreenOpen = 2;
-constexpr u32 kFlagBodyMode = 4;
 constexpr u32 kFlagSteveMode = 8;  // Minecraft is the game; Jak only renders its world for it
-constexpr u32 kFlagJakMode = 16;   // Jak is the game; Minecraft adds Steve's gameplay on top
 
 // Number of floats written by goal_get_camera.
 constexpr int kCameraFloats = 12;
@@ -74,19 +77,13 @@ u64 goal_send_state(u32 src);
 u64 goal_pop_event(u32 dst);
 
 /*!
- * GOAL: (pc-mc-send-host src) -> int
- * JAK mode: send Jak's first-person camera and body to Minecraft, together with the mouse buttons,
- * wheel and number keys pressed in Jak's window. src = 10 floats:
- *   [0..2] eye position (Jak meters)  [3] yaw  [4] pitch (Minecraft degrees)
- *   [5..7] feet position (Jak meters)  [8] vertical fov (degrees)  [9] flags
- * Returns the mouse buttons held (kHostButton* in mc_overlay.h).
+ * GOAL: (pc-mc-get-blocks dst max) -> int
+ * Copies the newest list of Minecraft blocks near Steve (from the BLOCKS packet) to dst as
+ * 4 x s32 per block: x, y, z (Jak meters, block corner), kind (kBlock* flags). Returns the count.
  */
-u64 goal_send_host(u32 src);
+u64 goal_get_blocks(u32 dst, u32 max);
 
-/// True while Minecraft is connected (fresh packets) and asking for JAK mode.
-bool jak_mode_active();
-
-/// True while Minecraft is connected (fresh packets) and asking for STEVE mode.
+/// True while Minecraft is connected (fresh packets) and playing in Jak's world.
 /// Safe to call from any thread.
 bool steve_mode_active();
 

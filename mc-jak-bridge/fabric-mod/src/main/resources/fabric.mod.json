@@ -3,7 +3,7 @@
   "id": "jakbridge",
   "version": "${version}",
   "name": "Jak Bridge",
-  "description": "JakCraft: Steve's Minecraft gameplay inside Jak and Daxter (OpenGOAL).",
+  "description": "JakCraft: Minecraft on top of Jak and Daxter (OpenGOAL) - play Minecraft in Jak's world.",
   "authors": [
     "Nuno"
   ],
@@ -21,7 +21,6 @@
     "fabric-api": "*"
   },
   "mixins": [
-    "jakbridge.mixins.json",
-    "jakbridge.optional.mixins.json"
+    "jakbridge.mixins.json"
   ]
 }

@@ -34,7 +34,6 @@
 #include "common/log/log.h"
 
 #include "game/kernel/common/Ptr.h"
-#include "game/mods/mc_overlay.h"
 
 namespace mc_passthrough {
 namespace {
@@ -79,21 +78,6 @@ struct EventPacket {
   float data[5];  // explosion: x, y, z (Jak meters), radius (m), power
 };
 
-struct HostPacket {
-  u32 magic;
-  u16 version;
-  u16 type;
-  u32 seq;
-  float eye[3];
-  float yaw, pitch;
-  float feet[3];
-  float vfov;
-  u32 buttons;
-  s32 wheel;
-  u32 hotbar;
-  u32 flags;
-};
-
 struct JakStatePacket {
   u32 magic;
   u16 version;
@@ -106,7 +90,10 @@ struct JakStatePacket {
 static_assert(sizeof(CameraPacket) == 64, "CameraPacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(JakStatePacket) == 44, "JakStatePacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(EventPacket) == 36, "EventPacket layout changed - update PROTOCOL.md");
-static_assert(sizeof(HostPacket) == 64, "HostPacket layout changed - update PROTOCOL.md");
+
+// Minecraft -> Jak: blocks the player built near Steve (x, y, z, kind)
+s32 g_blocks[kMaxBlocks * 4];
+int g_block_count = 0;
 
 // Minecraft -> Jak gameplay events, consumed by GOAL with (pc-mc-pop-event ...)
 constexpr int kMaxQueuedEvents = 64;
@@ -126,11 +113,31 @@ std::atomic<bool> g_running{false};
 sock_t g_sock = kBadSock;
 
 void listen_loop() {
-  char buf[256];
+  static char buf[65536];  // BLOCKS packets can be ~32 KB
   while (g_running.load()) {
     sockaddr_in from{};
     addrlen_t from_len = sizeof(from);
     int n = recvfrom(g_sock, buf, (int)sizeof(buf), 0, (sockaddr*)&from, &from_len);
+    if (n >= 16) {
+      u32 magic;
+      u16 version, type;
+      memcpy(&magic, buf, 4);
+      memcpy(&version, buf + 4, 2);
+      memcpy(&type, buf + 6, 2);
+      if (magic == kMagic && version == kVersion && type == kTypeBlocks) {
+        u32 count;
+        memcpy(&count, buf + 12, 4);
+        if (count > (u32)kMaxBlocks) {
+          count = kMaxBlocks;
+        }
+        if (16 + (int)count * 16 <= n) {
+          std::lock_guard<std::mutex> lk(g_mutex);
+          memcpy(g_blocks, buf + 16, count * 16);
+          g_block_count = (int)count;
+        }
+        continue;
+      }
+    }
     if (n >= (int)sizeof(EventPacket)) {
       EventPacket ev;
       memcpy(&ev, buf, sizeof(ev));
@@ -270,43 +277,15 @@ u64 goal_pop_event(u32 dst) {
   return type;
 }
 
-bool jak_mode_active() {
+u64 goal_get_blocks(u32 dst, u32 max) {
+  s32* out = Ptr<s32>(dst).c();
   std::lock_guard<std::mutex> lk(g_mutex);
-  if (!g_have_packet || !(g_latest.flags & kFlagJakMode)) {
-    return false;
+  int n = g_block_count;
+  if (n > (int)max) {
+    n = (int)max;
   }
-  return clock_type::now() - g_latest_time < std::chrono::milliseconds(250);
-}
-
-u64 goal_send_host(u32 src) {
-  const float* in = Ptr<float>(src).c();
-  HostPacket pkt{};
-  pkt.magic = kMagic;
-  pkt.version = kVersion;
-  pkt.type = kTypeHost;
-  for (int i = 0; i < 3; i++) {
-    pkt.eye[i] = in[i];
-    pkt.feet[i] = in[5 + i];
-  }
-  pkt.yaw = in[3];
-  pkt.pitch = in[4];
-  pkt.vfov = in[8];
-  pkt.flags = (u32)in[9];
-  pkt.buttons = host_buttons();
-  pkt.wheel = take_host_wheel();
-  pkt.hotbar = take_host_hotbar();
-  sockaddr_in client;
-  {
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (!g_have_client || g_sock == kBadSock) {
-      return pkt.buttons;
-    }
-    client = g_client;
-    pkt.seq = g_send_seq++;
-  }
-  sendto(g_sock, (const char*)&pkt, (int)sizeof(pkt), 0, (const sockaddr*)&client,
-         (int)sizeof(client));
-  return pkt.buttons;
+  memcpy(out, g_blocks, (size_t)n * 16);
+  return (u64)n;
 }
 
 bool steve_mode_active() {

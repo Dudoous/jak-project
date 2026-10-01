@@ -6,11 +6,17 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.attribute.EntityAttributeInstance;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.chunk.ChunkSection;
+import net.minecraft.world.chunk.WorldChunk;
+
+import java.io.IOException;
+import java.util.Arrays;
 
 import java.nio.file.Path;
 import java.util.HashSet;
@@ -19,14 +25,20 @@ import java.util.Set;
 
 /**
  * Runs on the integrated (singleplayer) server: places Jak's collision as invisible barrier blocks
- * around the player, teleports Steve to where Jak was when STEVE mode starts, and lets Steve step
- * up 1-block ledges (Jak's slopes become 1-block stairs).
+ * around the player, teleports Steve to where Jak was when Minecraft takes over, lets Steve step
+ * up 1-block ledges (Jak's slopes become 1-block stairs), and once a second tells Jak which blocks
+ * the player built nearby (Jak's enemies walk around them; lava, fire, cactus... kill them).
  */
 public final class CollisionPlacer {
     /** Blocks placed per server tick at most, so the game never hitches. */
     private static final int BLOCKS_PER_TICK = 12000;
     private static final double STEVE_STEP_HEIGHT = 1.05;
     private static final double VANILLA_STEP_HEIGHT = 0.6;
+    /** Send the player's blocks to Jak this often (server ticks). */
+    private static final int BLOCK_SCAN_TICKS = 20;
+    /** Scan this many chunks around the player (horizontally) and blocks up/down. */
+    private static final int BLOCK_SCAN_CHUNKS = 3;
+    private static final int BLOCK_SCAN_HEIGHT = 32;
 
     private final JakCraftConfig config;
     private volatile CollisionVoxels voxels;
@@ -40,6 +52,10 @@ public final class CollisionPlacer {
     private volatile float pendingDamage = 0f;
     private volatile String worldWarning = null;
     private boolean checkedWorldHeight = false;
+    private int ticksUntilBlockScan = 0;
+    private volatile int lastBlocksSent = 0;
+    private int[] blockBuf = new int[4 * 256];
+    private long[] blockDist = new long[256];
 
     public CollisionPlacer(JakCraftConfig config) {
         this.config = config;
@@ -60,6 +76,11 @@ public final class CollisionPlacer {
 
     public boolean loaded() {
         return voxels != null;
+    }
+
+    /** How many of the player's blocks the last BLOCKS packet told Jak about. */
+    public int lastBlocksSent() {
+        return lastBlocksSent;
     }
 
     /** Load the .obj collision in the background. */
@@ -158,6 +179,11 @@ public final class CollisionPlacer {
             }
         }
 
+        if (--ticksUntilBlockScan <= 0) {
+            ticksUntilBlockScan = BLOCK_SCAN_TICKS;
+            sendPlayerBlocks(world, player);
+        }
+
         float damage = takeDamage();
         if (damage > 0f && player.isAlive()) {
             player.damage(player.getDamageSources().generic(), damage);
@@ -233,6 +259,90 @@ public final class CollisionPlacer {
             doneColumns.add(key);
         }
         return col.count();
+    }
+
+    /** Blocks that kill Jak's enemies walking into them. */
+    private static boolean isDeadly(BlockState s) {
+        return s.isOf(Blocks.LAVA) || s.isOf(Blocks.MAGMA_BLOCK) || s.isOf(Blocks.CACTUS)
+                || s.isOf(Blocks.SWEET_BERRY_BUSH) || s.isOf(Blocks.WITHER_ROSE)
+                || s.isIn(BlockTags.FIRE) || s.isIn(BlockTags.CAMPFIRES);
+    }
+
+    /** Anything the player built (Jak's own ground is barrier blocks, the rest of the world is void). */
+    private static boolean isPlayerBlock(BlockState s) {
+        return !s.isAir() && !s.isOf(Blocks.BARRIER) && !s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS);
+    }
+
+    /**
+     * Find the blocks the player built around Steve and send the nearest ones to Jak (BLOCKS
+     * packet, Jak meters). Only sections that contain such a block are scanned block by block.
+     */
+    private void sendPlayerBlocks(ServerWorld world, ServerPlayerEntity player) {
+        BridgeSocket bridge = JakBridgeClient.bridge();
+        if (bridge == null) return;
+        int px = player.getBlockX(), py = player.getBlockY(), pz = player.getBlockZ();
+        int pcx = px >> 4, pcz = pz >> 4;
+        int minSection = (py - BLOCK_SCAN_HEIGHT) >> 4;
+        int maxSection = (py + BLOCK_SCAN_HEIGHT) >> 4;
+        int n = 0;
+        BlockPos.Mutable pos = new BlockPos.Mutable();
+        for (int cx = pcx - BLOCK_SCAN_CHUNKS; cx <= pcx + BLOCK_SCAN_CHUNKS; cx++) {
+            for (int cz = pcz - BLOCK_SCAN_CHUNKS; cz <= pcz + BLOCK_SCAN_CHUNKS; cz++) {
+                WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz);
+                if (chunk == null) continue; // not loaded
+                ChunkSection[] sections = chunk.getSectionArray();
+                for (int i = 0; i < sections.length; i++) {
+                    int sy = chunk.sectionIndexToCoord(i);
+                    if (sy < minSection || sy > maxSection) continue;
+                    ChunkSection section = sections[i];
+                    if (section == null || section.isEmpty() || !section.hasAny(CollisionPlacer::isPlayerBlock)) continue;
+                    for (int ly = 0; ly < 16; ly++) {
+                        for (int lz = 0; lz < 16; lz++) {
+                            for (int lx = 0; lx < 16; lx++) {
+                                BlockState s = section.getBlockState(lx, ly, lz);
+                                if (!isPlayerBlock(s)) continue;
+                                int x = (cx << 4) + lx, y = (sy << 4) + ly, z = (cz << 4) + lz;
+                                pos.set(x, y, z);
+                                int kind = 0;
+                                if (!s.getCollisionShape(world, pos).isEmpty()) kind |= BridgeSocket.BLOCK_SOLID;
+                                if (isDeadly(s)) kind |= BridgeSocket.BLOCK_DEADLY;
+                                if (kind == 0) continue; // flowers, torches, water...: nothing for Jak
+                                if (n == blockDist.length) {
+                                    blockDist = Arrays.copyOf(blockDist, n * 2);
+                                    blockBuf = Arrays.copyOf(blockBuf, n * 8);
+                                }
+                                long dx = x - px, dy = y - py, dz = z - pz;
+                                // sort key: distance in the high bits, index in the low 24
+                                blockDist[n] = ((dx * dx + dy * dy + dz * dz) << 24) | n;
+                                blockBuf[4 * n] = x;
+                                blockBuf[4 * n + 1] = y - yOffset; // Jak meters
+                                blockBuf[4 * n + 2] = z;
+                                blockBuf[4 * n + 3] = kind;
+                                n++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int[] out = blockBuf;
+        if (n > BridgeSocket.MAX_BLOCKS) {
+            // too many: keep the ones closest to Steve
+            long[] keys = Arrays.copyOf(blockDist, n);
+            Arrays.sort(keys);
+            out = new int[4 * BridgeSocket.MAX_BLOCKS];
+            for (int k = 0; k < BridgeSocket.MAX_BLOCKS; k++) {
+                int idx = (int) (keys[k] & 0xffffff);
+                System.arraycopy(blockBuf, 4 * idx, out, 4 * k, 4);
+            }
+            n = BridgeSocket.MAX_BLOCKS;
+        }
+        try {
+            bridge.sendBlocks(out, n);
+            lastBlocksSent = n;
+        } catch (IOException e) {
+            JakBridgeClient.LOG.warn("Could not send blocks to Jak: {}", e.toString());
+        }
     }
 
     private void applyStepHeight(ServerPlayerEntity player, boolean steve) {
