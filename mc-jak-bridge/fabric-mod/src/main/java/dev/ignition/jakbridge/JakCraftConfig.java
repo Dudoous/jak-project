@@ -18,6 +18,7 @@ import java.util.Properties;
  *                      is 4064 blocks tall, so all of Jak's world fits without an offset)
  *   visible_collision  true = glass instead of invisible barriers (to check alignment)
  *   collision_radius   chunks around the player that get collision blocks (default 8)
+ *   steve_scale        how big Steve is in Jak's world (default 1.35 = 2.4 blocks tall; 1 = vanilla)
  *   view_sync          locked (default): Minecraft draws its world from the exact spot Jak's
  *                      picture was taken from, so blocks never slide over Jak's world (the view
  *                      follows the mouse a few frames late). fast: no delay, but Jak's world trails
@@ -105,6 +106,14 @@ public final class JakCraftConfig {
 
     public boolean visibleCollision() {
         return Boolean.parseBoolean(props.getProperty("visible_collision", "false").trim());
+    }
+
+    public double steveScale() {
+        try {
+            return Math.max(0.5, Math.min(3.0, Double.parseDouble(props.getProperty("steve_scale", "1.35").trim())));
+        } catch (NumberFormatException e) {
+            return 1.35;
+        }
     }
 
     public boolean viewLocked() {

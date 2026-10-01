@@ -52,6 +52,41 @@ public final class JakSky {
     private static int frameHeight = 0;
     private static boolean haveFrame = false;
     private static boolean broken = false;
+    // stats for /jakcraft
+    private static long uploadNanosAvg = 0;
+    private static long tornFrames = 0;
+    private static long statsTime = 0;
+    private static long statsJakFrames = -1;
+    private static long statsReceived = 0;
+    private static float jakFps = 0f;
+    private static float receivedFps = 0f;
+
+    /** "Jak draws 60 fps, Minecraft gets 60 fps, upload 1.2 ms" for /jakcraft. */
+    public static String stats() {
+        if (reader == null) return "no frame reader";
+        return String.format("Jak draws %.0f fps, Minecraft gets %.0f fps (upload %.1f ms%s)", jakFps, receivedFps,
+                uploadNanosAvg / 1e6, tornFrames > 0 ? ", " + tornFrames + " torn" : "");
+    }
+
+    private static void updateStats() {
+        long now = System.nanoTime();
+        if (statsTime == 0) {
+            statsTime = now;
+            statsJakFrames = reader.framesWrittenByJak();
+            statsReceived = reader.framesReceived();
+            return;
+        }
+        long dt = now - statsTime;
+        if (dt < 1_000_000_000L) return;
+        long jak = reader.framesWrittenByJak();
+        long got = reader.framesReceived();
+        float secs = dt / 1e9f;
+        jakFps = (jak >= 0 && statsJakFrames >= 0 && jak >= statsJakFrames) ? (jak - statsJakFrames) / secs : 0f;
+        receivedFps = (got - statsReceived) / secs;
+        statsTime = now;
+        statsJakFrames = jak;
+        statsReceived = got;
+    }
 
     private JakSky() {
     }
@@ -88,6 +123,7 @@ public final class JakSky {
 
     /** Pull a new frame from Jak, if any, into the texture. */
     private static void update() {
+        updateStats();
         FrameReader.Frame f = reader.poll();
         if (f == null) return;
         framePose = f.poseValid ? new Pose(f.poseSeq, f.x, f.y, f.z, f.yaw, f.pitch) : null;
@@ -111,13 +147,18 @@ public final class JakSky {
             texWidth = f.width;
             texHeight = f.height;
         }
-        GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, f.width, f.height, GL11.GL_RGBA,
+        long t0 = System.nanoTime();
+        // BGRA: the format drivers upload without converting pixel by pixel
+        int fmt = f.format == FrameReader.FORMAT_RGBA8 ? GL11.GL_RGBA : GL12.GL_BGRA;
+        GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, f.width, f.height, fmt,
                 GL11.GL_UNSIGNED_BYTE, f.pixels);
+        uploadNanosAvg = uploadNanosAvg == 0 ? System.nanoTime() - t0
+                : (uploadNanosAvg * 15 + (System.nanoTime() - t0)) / 16;
         frameWidth = f.width;
         frameHeight = f.height;
         haveFrame = true;
         // a torn frame (Jak overwrote it mid-upload) just gets replaced next frame
-        reader.stillValid(f);
+        if (!reader.stillValid(f)) tornFrames++;
     }
 
     /**

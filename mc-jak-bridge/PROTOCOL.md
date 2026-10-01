@@ -17,21 +17,21 @@ ignored.
 |-------:|------|---------|-------|
 | 0      | u32  | magic   | `0x4B4A434D` (bytes `M C J K`) |
 | 4      | u16  | version | `1` |
-| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `5` = BLOCKS (`4` unused) |
+| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `5` = BLOCKS, `6` = ACTORS (`4` unused) |
 | 8      | u32  | seq     | incrementing per sender |
 
 ## CAMERA (type 1, Minecraft → Jak, 64 bytes, sent every rendered frame)
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 3 Minecraft is playing (always set by the mod), bits 16–31 Minecraft window width/height × 1000 |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 3 Minecraft is playing (always set by the mod), bit 4 Steve is down a hole he dug into Jak's ground (Jak waits on the surface), bits 16–31 Minecraft window width/height × 1000 |
 | 16     | f64  | x       | camera (eye) position in Jak meters (Minecraft Y minus `y_offset`, normally 0) |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
 | 40     | f32  | yaw     | degrees, wrapped to [-180, 180). 0 faces +Z (south), 90 faces −X (west) |
 | 44     | f32  | pitch   | degrees, +90 = looking straight down |
 | 48     | f32  | vfov    | vertical FOV, degrees |
-| 52     | f32  | forward | unused, 0 |
+| 52     | f32  | eye     | Steve's eye height above his feet (m) — he is scaled up in Jak's world |
 | 56     | f32  | strafe  | unused, 0 |
 | 60     | u32  | buttons | 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use; Jak's buttons: 32 ○, 64 ✕, 128 △, 256 left, 512 right, 1024 up, 2048 down |
 
@@ -77,6 +77,18 @@ kind bits: `1` solid (Jak's enemies walk around it), `2` deadly (lava, fire, mag
 berry bush, wither rose: kills Jak's enemies touching it). Each packet replaces the previous list:
 the blocks the player built within 3 chunks of Steve (and 32 blocks up/down), nearest first if
 there are more than 2048. GOAL reads it each frame with `(pc-mc-get-blocks ptr max)`.
+
+## ACTORS (type 6, Jak → Minecraft, 16 + 32·n bytes, every 6 frames)
+
+| Offset | Type | Field | Notes |
+|-------:|------|-------|-------|
+| 12 | u32 | count | n, at most 64 |
+| 16 | 32 bytes · n | objects | u32 id, u32 kind, f32 x, y, z (Jak meters, centre), f32 half size (m), f32 normal x, z |
+
+The solid Jak objects within 48 m of Steve: kind `1` = box (crates, scout fly boxes), kind `2` =
+slab (a closed door, facing the normal). Minecraft fills them with invisible blocks and removes
+those when an object is no longer listed (crate broken, door open, out of range). Each packet
+replaces the previous list.
 
 ## Implementations
 

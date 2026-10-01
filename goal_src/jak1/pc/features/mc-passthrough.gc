@@ -10,6 +10,7 @@
 (require "engine/common-obs/water.gc")
 (require "engine/common-obs/nav-enemy.gc")
 (require "engine/common-obs/crates.gc")
+(require "engine/common-obs/baseplat.gc")
 (require "engine/common-obs/basebutton.gc")
 
 ;; Minecraft passthrough mod (JakCraft): Minecraft on top of Jak and Daxter.
@@ -44,6 +45,7 @@
 (define-extern pc-mc-pop-event (function (pointer float) int))
 (define-extern pc-mc-get-blocks (function pointer int int))
 (define-extern pc-mc-pose-used (function int))
+(define-extern pc-mc-send-actors (function pointer int int))
 
 (defconstant MC_RAW_X 0)
 (defconstant MC_RAW_Y 1)
@@ -54,10 +56,12 @@
 (defconstant MC_RAW_AGE_MS 6)
 (defconstant MC_RAW_SEQ 7)
 (defconstant MC_RAW_FLAGS 8)
+(defconstant MC_RAW_EYE_HEIGHT 9) ;; Steve's eye height above his feet (m), he can be scaled up
 (defconstant MC_RAW_BUTTONS 11)
 
 ;; CAMERA packet flags (see PROTOCOL.md)
 (defconstant MC_FLAG_STEVE_MODE 8)
+(defconstant MC_FLAG_IN_HOLE 16) ;; Steve is down a hole he dug into Jak's ground
 
 ;; CAMERA packet buttons
 (defconstant MC_BUTTON_ATTACK 8)
@@ -226,6 +230,13 @@
 (defun mc-steve-hit! ((p process))
   (cond
     ((mc-enemy? p) (mc-kill-enemy! p))
+    ((type-type? (-> p type) basebutton)
+     (format 0 "[mc-passthrough] Steve punched button ~A~%" (-> p name))
+     (mc-send-attack! p 'flop)
+     ;; some buttons refuse a punch (a warp gate switch wants Geyser Rock's power cells first):
+     ;; push it down anyway, Steve punched it.
+     (when (and (-> p next-state) (= (-> p next-state name) 'basebutton-up-idle))
+       (send-event p 'trigger)))
     (else
      (format 0 "[mc-passthrough] Steve hit ~A~%" (-> p name))
      (mc-send-attack! p 'flop)))
@@ -393,6 +404,70 @@
 (set! *mc-passthrough-nav-hook* mc-nav-add-blocks)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Jak's solid objects for Minecraft (crates, closed doors)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Jak's level collision only has the level itself, not its objects. Every few frames the crates
+;; (scout fly boxes too) and closed doors near Steve are sent to Minecraft (ACTORS packet), which
+;; puts invisible blocks there so Steve can't walk through them, and removes them when a crate
+;; breaks or a door opens. 8 floats each: id, kind, x, y, z (Jak meters), half size, normal x, z.
+(defconstant MC_MAX_ACTORS 64)
+(defconstant MC_ACTOR_BOX 1)
+(defconstant MC_ACTOR_SLAB 2)
+(define *mc-actor-data* (new 'global 'array 'float (* 8 MC_MAX_ACTORS)))
+(define *mc-actor-count* 0)
+(define *mc-actor-timer* 0)
+
+(defun mc-solid-actor-kind ((p process))
+  "MC_ACTOR_BOX for crates, MC_ACTOR_SLAB for closed doors, 0 for everything else."
+  (let ((s (if (-> p next-state) (-> p next-state name) #f)))
+    (cond
+      ((type-type? (-> p type) pickup-spawner) 0) ;; invisible
+      ((type-type? (-> p type) crate) (if (or (= s 'die) (= s 'special-contents-die)) 0 MC_ACTOR_BOX))
+      ((type-type? (-> p type) eco-door) (if (= s 'door-closed) MC_ACTOR_SLAB 0))
+      (else 0))))
+
+(defun mc-send-solid-actors! ((st mc-passthrough-state))
+  "Every 6 frames: the crates and closed doors within 48 m of Steve."
+  (+! *mc-actor-timer* 1)
+  (when (>= *mc-actor-timer* 6)
+    (set! *mc-actor-timer* 0)
+    (set! *mc-actor-count* 0)
+    (set! (-> *mc-search-origin* quad) (-> st pos quad))
+    (iterate-process-tree
+      *active-pool*
+      (lambda ((p process))
+        (let ((kind (mc-solid-actor-kind p)))
+          (when (and (nonzero? kind) (< *mc-actor-count* MC_MAX_ACTORS))
+            (let ((root (-> (the-as process-drawable p) root)))
+              (when (and root (type-type? (-> root type) collide-shape))
+                (let ((sph (-> (the-as collide-shape root) root-prim prim-core world-sphere))
+                      (i (* 8 *mc-actor-count*))
+                      (inv-m (/ 1.0 METER_LENGTH)))
+                  (when (< (vector-vector-distance sph *mc-search-origin*) (meters 48.0))
+                    (set! (-> *mc-actor-data* i) (the float (-> p pid)))
+                    (set! (-> *mc-actor-data* (+ i 1)) (the float kind))
+                    (set! (-> *mc-actor-data* (+ i 2)) (* inv-m (-> sph x)))
+                    (set! (-> *mc-actor-data* (+ i 3)) (* inv-m (-> sph y)))
+                    (set! (-> *mc-actor-data* (+ i 4)) (* inv-m (-> sph z)))
+                    (cond
+                      ((= kind MC_ACTOR_BOX)
+                       ;; a crate's sphere is centred on the box and reaches its corners
+                       (set! (-> *mc-actor-data* (+ i 5)) (* 0.44 inv-m (-> sph w)))
+                       (set! (-> *mc-actor-data* (+ i 6)) 0.0)
+                       (set! (-> *mc-actor-data* (+ i 7)) 0.0))
+                      (else
+                       (let ((n (-> (the-as eco-door p) out-dir)))
+                         (set! (-> *mc-actor-data* (+ i 5)) (* 0.6 inv-m (-> sph w)))
+                         (set! (-> *mc-actor-data* (+ i 6)) (-> n x))
+                         (set! (-> *mc-actor-data* (+ i 7)) (-> n z)))))
+                    (+! *mc-actor-count* 1)))))))
+        #f)
+      *kernel-context*)
+    (pc-mc-send-actors (the-as pointer (&-> *mc-actor-data* 0)) *mc-actor-count*))
+  (none))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; every frame (called from update-camera)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -409,6 +484,10 @@
 
 (defun mc-passthrough-compute-pose! ((st mc-passthrough-state))
   "Steve's eyes and look direction in Jak space."
+  ;; Steve's size (Minecraft can make him taller): eye height, and a longer reach with it
+  (let ((eye (-> st raw MC_RAW_EYE_HEIGHT)))
+    (set! (-> st eye-height) (meters (if (and (< 0.5 eye) (< eye 6.0)) eye 1.62)))
+    (set! (-> st melee-reach) (* (meters 4.5) (/ (-> st eye-height) (meters 1.62)))))
   (let* ((heading (- (degrees (-> st raw MC_RAW_YAW))))
          ;; clamp so forward is never parallel to down (forward-down->inv-matrix would divide by 0)
          (pitch (degrees (fmax -89.5 (fmin 89.5 (-> st raw MC_RAW_PITCH)))))
@@ -467,6 +546,8 @@
       (-! (-> feet y) (-> st eye-height))
       (cond
         ((mc-jak-busy?) #f)
+        ;; Steve dug into Jak's ground: Jak can't follow him under his own floor, he waits on top
+        ((mc-packet-flag? st MC_FLAG_IN_HOLE) #f)
         ((< (meters 8.0) (vector-vector-distance (-> *target* control trans) (-> st last-park)))
          (mc-passthrough-handover! st))
         (else
@@ -488,6 +569,7 @@
   (mc-process-events! st)
   (mc-refresh-blocks!)
   (mc-deadly-blocks!)
+  (mc-send-solid-actors! st)
   (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
     ;; punch on click, and keep punching every 0.35 s while held
     (when (and (logtest? buttons MC_BUTTON_ATTACK)

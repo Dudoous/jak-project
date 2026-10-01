@@ -1,6 +1,11 @@
 /*!
  * @file mc_frame_share.cpp
  * Copy each finished Jak frame into a shared memory-mapped file for Minecraft.
+ *
+ * Triple-buffered: every frame goes into the slot after the last one written, and the global
+ * header then points at it. Minecraft always reads the newest complete slot, which Jak doesn't
+ * touch again for two more frames, so Minecraft never has to skip a frame because Jak was busy
+ * writing, and never gets half of one frame and half of the next.
  */
 
 #include "mc_frame_share.h"
@@ -22,6 +27,7 @@
 #endif
 // clang-format on
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -37,28 +43,47 @@
 namespace mc_passthrough {
 namespace {
 
-constexpr size_t kFileSize =
-    kFrameHeaderSize + (size_t)kFrameMaxWidth * (size_t)kFrameMaxHeight * 4;
+constexpr size_t kSlotStride = kFrameHeaderSize + (size_t)kFrameMaxWidth * kFrameMaxHeight * 4;
+constexpr size_t kFileSize = kFrameHeaderSize + kFrameSlots * kSlotStride;
 
-struct FrameHeader {
+struct GlobalHeader {
   u32 magic;
   u32 version;
-  u32 seq;
+  u32 latest;  // (frame number << 2) | slot of the newest complete frame
+  u32 slot_count;
+  u32 slot_stride;
+  u32 max_width;
+  u32 max_height;
+  u32 frames_written;
+  u32 reserved[8];
+};
+static_assert(sizeof(GlobalHeader) == kFrameHeaderSize, "frame header must be 64 bytes");
+
+struct SlotHeader {
+  u32 seq;  // odd while this slot is being written
   u32 width;
   u32 height;
-  u32 format;
-  u32 frames_written;
+  u32 format;  // kFrameFormatBgra8
+  u32 frame;   // frame number
   // the camera this frame was rendered from (see goal_pose_used), so Minecraft can match it
   u32 pose_valid;
   u32 pose_seq;
   float pose[6];  // x, y, z (Jak meters, eye), yaw, pitch, vfov (Minecraft degrees)
-  u32 reserved;
+  u32 reserved[3];
 };
-static_assert(sizeof(FrameHeader) == kFrameHeaderSize, "frame header must be 64 bytes");
+static_assert(sizeof(SlotHeader) == kFrameHeaderSize, "slot header must be 64 bytes");
 
 u8* g_mapped = nullptr;
 bool g_open_failed = false;
 std::chrono::steady_clock::time_point g_last_open_attempt{};
+u32 g_frame = 0;
+u32 g_slot = 0;
+
+// downscale target when Jak's window is bigger than the shared buffer
+GLuint g_fbo = 0;
+GLuint g_fbo_tex = 0;
+int g_fbo_w = 0;
+int g_fbo_h = 0;
 
 #ifdef _WIN32
 HANDLE g_file = INVALID_HANDLE_VALUE;
@@ -76,11 +101,11 @@ std::string frame_file_path() {
   if (!dir.empty() && dir.back() != '\\' && dir.back() != '/') {
     dir += '\\';
   }
-  return dir + "jakcraft-frame.bin";
+  return dir + "jakcraft-frames.bin";
 #else
   const char* tmpdir = std::getenv("TMPDIR");
   std::string dir = tmpdir ? tmpdir : "/tmp";
-  return dir + "/jakcraft-frame.bin";
+  return dir + "/jakcraft-frames.bin";
 #endif
 }
 
@@ -97,14 +122,17 @@ bool open_mapping() {
   const std::string path = frame_file_path();
 
 #ifdef _WIN32
+  // "temporary": Windows keeps the data in memory instead of constantly writing ~1 GB/s of
+  // frames to the disk behind the mapping.
   g_file = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-                       FILE_ATTRIBUTE_NORMAL, nullptr);
+                       FILE_ATTRIBUTE_TEMPORARY, nullptr);
   if (g_file == INVALID_HANDLE_VALUE) {
     lg::error("[mc-passthrough] can't open frame file {}", path);
     g_open_failed = true;
     return false;
   }
+  SetFileAttributesA(path.c_str(), FILE_ATTRIBUTE_TEMPORARY);  // if it already existed
   // creating a mapping larger than the file grows the file to that size
   g_mapping = CreateFileMappingA(g_file, nullptr, PAGE_READWRITE, (DWORD)((u64)kFileSize >> 32),
                                  (DWORD)(kFileSize & 0xffffffff), nullptr);
@@ -148,15 +176,54 @@ bool open_mapping() {
   g_mapped = (u8*)mem;
 #endif
 
-  auto* hdr = (FrameHeader*)g_mapped;
+  auto* hdr = (GlobalHeader*)g_mapped;
   hdr->magic = kFrameMagic;
   hdr->version = kFrameVersion;
-  hdr->format = 1;
-  if (hdr->seq & 1) {
-    hdr->seq++;  // a previous run died mid-frame
+  hdr->slot_count = kFrameSlots;
+  hdr->slot_stride = (u32)kSlotStride;
+  hdr->max_width = kFrameMaxWidth;
+  hdr->max_height = kFrameMaxHeight;
+  for (u32 i = 0; i < kFrameSlots; i++) {
+    auto* slot = (SlotHeader*)(g_mapped + kFrameHeaderSize + i * kSlotStride);
+    if (slot->seq & 1) {
+      slot->seq++;  // a previous run died mid-frame
+    }
   }
+  g_frame = hdr->latest >> 2;
+  g_slot = hdr->latest & 3;
   g_open_failed = false;
   lg::info("[mc-passthrough] sharing frames with Minecraft through {}", path);
+  return true;
+}
+
+/// Shrink (x, y, w, h) of the window's back buffer into our FBO. Returns false if that failed.
+bool downscale(int x, int y, int w, int h, int dw, int dh) {
+  if (!g_fbo || dw != g_fbo_w || dh != g_fbo_h) {
+    if (!g_fbo) {
+      glGenFramebuffers(1, &g_fbo);
+      glGenTextures(1, &g_fbo_tex);
+    }
+    GLint old_tex = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_tex);
+    glBindTexture(GL_TEXTURE_2D, g_fbo_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, dw, dh, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)old_tex);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_fbo_tex, 0);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      return false;
+    }
+    g_fbo_w = dw;
+    g_fbo_h = dh;
+  }
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+  glReadBuffer(GL_BACK);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_fbo);
+  glBlitFramebuffer(x, y, x + w, y + h, 0, 0, dw, dh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
+  glReadBuffer(GL_COLOR_ATTACHMENT0);
   return true;
 }
 
@@ -169,46 +236,78 @@ void export_frame_if_wanted(int x, int y, int w, int h) {
   if (!open_mapping()) {
     return;
   }
-  // larger than the shared buffer: share the centre of the image
-  if (w > (int)kFrameMaxWidth) {
-    x += (w - (int)kFrameMaxWidth) / 2;
-    w = (int)kFrameMaxWidth;
+
+  GLint old_read = 0, old_draw = 0;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &old_read);
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &old_draw);
+
+  // bigger than the shared buffer: shrink it, keeping its shape
+  int dw = w, dh = h;
+  bool scaled = false;
+  if (w > (int)kFrameMaxWidth || h > (int)kFrameMaxHeight) {
+    float s = std::min((float)kFrameMaxWidth / (float)w, (float)kFrameMaxHeight / (float)h);
+    dw = std::max(1, std::min((int)kFrameMaxWidth, (int)((float)w * s)));
+    dh = std::max(1, std::min((int)kFrameMaxHeight, (int)((float)h * s)));
+    scaled = downscale(x, y, w, h, dw, dh);
+    if (!scaled) {
+      // no FBO: share the centre of the image instead
+      x += (w - dw) / 2;
+      y += (h - dh) / 2;
+    }
   }
-  if (h > (int)kFrameMaxHeight) {
-    y += (h - (int)kFrameMaxHeight) / 2;
-    h = (int)kFrameMaxHeight;
+  if (!scaled) {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
   }
 
-  auto* hdr = (FrameHeader*)g_mapped;
-  u8* pixels = g_mapped + kFrameHeaderSize;
+  auto* hdr = (GlobalHeader*)g_mapped;
+  const u32 slot_idx = (g_slot + 1) % kFrameSlots;
+  auto* slot = (SlotHeader*)(g_mapped + kFrameHeaderSize + slot_idx * kSlotStride);
+  u8* pixels = (u8*)slot + kFrameHeaderSize;
 
   // seqlock: odd while writing
-  u32 seq = hdr->seq;
-  hdr->seq = seq + 1;
+  const u32 seq = slot->seq;
+  slot->seq = seq + 1;
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  hdr->width = (u32)w;
-  hdr->height = (u32)h;
+  const u32 frame = g_frame + 1;
+  slot->width = (u32)dw;
+  slot->height = (u32)dh;
+  slot->format = kFrameFormatBgra8;
+  slot->frame = frame;
   const FramePose pose = rendered_pose();
-  hdr->pose_valid = pose.valid;
-  hdr->pose_seq = pose.seq;
-  hdr->pose[0] = pose.x;
-  hdr->pose[1] = pose.y;
-  hdr->pose[2] = pose.z;
-  hdr->pose[3] = pose.yaw;
-  hdr->pose[4] = pose.pitch;
-  hdr->pose[5] = pose.vfov;
+  slot->pose_valid = pose.valid;
+  slot->pose_seq = pose.seq;
+  slot->pose[0] = pose.x;
+  slot->pose[1] = pose.y;
+  slot->pose[2] = pose.z;
+  slot->pose[3] = pose.yaw;
+  slot->pose[4] = pose.pitch;
+  slot->pose[5] = pose.vfov;
 
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-  glReadBuffer(GL_BACK);
   glPixelStorei(GL_PACK_ALIGNMENT, 4);
   glPixelStorei(GL_PACK_ROW_LENGTH, 0);
   glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
   glPixelStorei(GL_PACK_SKIP_ROWS, 0);
-  glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+  // BGRA is the format GPUs and drivers copy without converting, on both ends
+  if (scaled) {
+    glReadPixels(0, 0, dw, dh, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+  } else {
+    glReadPixels(x, y, dw, dh, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+  }
 
   std::atomic_thread_fence(std::memory_order_seq_cst);
-  hdr->frames_written++;
-  hdr->seq = seq + 2;
+  slot->seq = seq + 2;
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  hdr->latest = (frame << 2) | slot_idx;
+  hdr->frames_written = frame;
+  g_frame = frame;
+  g_slot = slot_idx;
+
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)old_read);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)old_draw);
+  if (old_read == 0) {
+    glReadBuffer(GL_BACK);
+  }
 }
 
 }  // namespace mc_passthrough

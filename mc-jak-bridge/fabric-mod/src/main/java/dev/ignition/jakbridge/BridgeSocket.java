@@ -20,6 +20,9 @@ public final class BridgeSocket implements AutoCloseable {
     public static final short TYPE_JAK_STATE = 2;
     public static final short TYPE_EVENT = 3;
     public static final short TYPE_BLOCKS = 5;
+    public static final short TYPE_ACTORS = 6;
+    public static final int ACTOR_BOX = 1;
+    public static final int ACTOR_SLAB = 2;
     public static final int EVENT_EXPLOSION = 1;
     public static final int EVENT_PACKET_SIZE = 36;
     public static final int DEFAULT_PORT = 47800;
@@ -34,6 +37,8 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int FLAG_SCREEN_OPEN = 2;
     /** Minecraft is playing: Jak renders his world from Steve's eyes and is hidden/frozen. */
     public static final int FLAG_STEVE_MODE = 8;
+    /** Steve is down a hole he dug into Jak's ground: Jak stays up on the surface. */
+    public static final int FLAG_IN_HOLE = 16;
 
     /** JAK_STATE flag: Minecraft has taken over. data[0..2] = Jak's position when that happened,
      *  data[6] = activation id (changes each time it starts again). */
@@ -55,6 +60,16 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int BUTTON_JAK_UP = 1024;
     public static final int BUTTON_JAK_DOWN = 2048;
 
+    /** Solid Jak objects near Steve (crates, closed doors), see PROTOCOL.md, ACTORS. */
+    public static final class Actors {
+        public int count;
+        public final int[] id = new int[64];
+        public final int[] kind = new int[64];
+        /** x, y, z (Jak meters, centre), half size (m), normal x, normal z, per object. */
+        public final float[] data = new float[64 * 6];
+        public long receivedNanos;
+    }
+
     /** Latest state the Jak side sent back (see PROTOCOL.md, JAK_STATE). */
     public static final class JakState {
         public int seq;
@@ -70,6 +85,7 @@ public final class BridgeSocket implements AutoCloseable {
     private final Thread receiver;
     private volatile boolean running = true;
     private volatile JakState latestJakState;
+    private volatile Actors latestActors;
     private int seq = 0;
 
     public BridgeSocket(int port) throws IOException {
@@ -137,22 +153,45 @@ public final class BridgeSocket implements AutoCloseable {
         return latestJakState;
     }
 
+    public Actors latestActors() {
+        return latestActors;
+    }
+
     public int sentPackets() {
         return seq;
     }
 
     private void receiveLoop() {
-        byte[] buf = new byte[256];
+        byte[] buf = new byte[4096];
         DatagramPacket packet = new DatagramPacket(buf, buf.length);
         while (running) {
             try {
                 packet.setLength(buf.length);
                 socket.receive(packet);
-                if (packet.getLength() < JAK_STATE_PACKET_SIZE) {
+                if (packet.getLength() < 16) {
                     continue;
                 }
                 ByteBuffer in = ByteBuffer.wrap(buf, 0, packet.getLength()).order(ByteOrder.LITTLE_ENDIAN);
-                if (in.getInt() != MAGIC || in.getShort() != VERSION || in.getShort() != TYPE_JAK_STATE) {
+                if (in.getInt() != MAGIC || in.getShort() != VERSION) {
+                    continue;
+                }
+                short type = in.getShort();
+                if (type == TYPE_ACTORS) {
+                    in.getInt(); // seq
+                    int n = Math.min(64, in.getInt());
+                    if (n < 0 || 16 + n * 32 > packet.getLength()) continue;
+                    Actors a = new Actors();
+                    a.count = n;
+                    for (int i = 0; i < n; i++) {
+                        a.id[i] = in.getInt();
+                        a.kind[i] = in.getInt();
+                        for (int k = 0; k < 6; k++) a.data[i * 6 + k] = in.getFloat();
+                    }
+                    a.receivedNanos = System.nanoTime();
+                    latestActors = a;
+                    continue;
+                }
+                if (type != TYPE_JAK_STATE || packet.getLength() < JAK_STATE_PACKET_SIZE) {
                     continue;
                 }
                 JakState state = new JakState();

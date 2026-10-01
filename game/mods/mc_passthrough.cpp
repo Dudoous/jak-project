@@ -301,6 +301,44 @@ u64 goal_get_blocks(u32 dst, u32 max) {
   return (u64)n;
 }
 
+u64 goal_send_actors(u32 src, u32 count) {
+  const float* in = Ptr<float>(src).c();
+  if (count > (u32)kMaxActors) {
+    count = kMaxActors;
+  }
+  // header: magic u32, version u16, type u16, seq u32, count u32; then 32 bytes per object
+  u8 buf[16 + kMaxActors * 32];
+  sockaddr_in client;
+  u32 seq;
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_have_client || g_sock == kBadSock) {
+      return 0;
+    }
+    client = g_client;
+    seq = g_send_seq++;
+  }
+  const u32 magic = kMagic;
+  const u16 version = kVersion, type = kTypeActors;
+  memcpy(buf, &magic, 4);
+  memcpy(buf + 4, &version, 2);
+  memcpy(buf + 6, &type, 2);
+  memcpy(buf + 8, &seq, 4);
+  memcpy(buf + 12, &count, 4);
+  for (u32 i = 0; i < count; i++) {
+    const float* a = in + i * 8;
+    u8* out = buf + 16 + i * 32;
+    const u32 id = (u32)a[0];
+    const u32 kind = (u32)a[1];
+    memcpy(out, &id, 4);
+    memcpy(out + 4, &kind, 4);
+    memcpy(out + 8, a + 2, 6 * 4);  // x y z half nx nz
+  }
+  const int len = (int)(16 + count * 32);
+  int n = sendto(g_sock, (const char*)buf, len, 0, (const sockaddr*)&client, (int)sizeof(client));
+  return n == len ? 1 : 0;
+}
+
 u64 goal_pose_used() {
   std::lock_guard<std::mutex> lk(g_mutex);
   g_pending = g_last_read;

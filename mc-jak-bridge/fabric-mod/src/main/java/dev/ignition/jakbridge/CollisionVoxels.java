@@ -47,6 +47,13 @@ public final class CollisionVoxels {
             return count;
         }
 
+        boolean has(int lx, int y, int lz) {
+            long[] bits = sections.get(Math.floorDiv(y, 16));
+            if (bits == null) return false;
+            int idx = lx + (lz << 4) + ((y - (Math.floorDiv(y, 16) << 4)) << 8);
+            return (bits[idx >> 6] & (1L << (idx & 63))) != 0;
+        }
+
         /** Calls out with (localX, y, localZ) for every voxel in this column, bottom to top. */
         public void forEach(VoxelConsumer out) {
             for (Map.Entry<Integer, long[]> e : sections.entrySet()) {
@@ -124,6 +131,12 @@ public final class CollisionVoxels {
             }
         }
         if (bigTriangles.count() > 0) out.accept(bigTriangles);
+    }
+
+    /** True if Jak's level collision has a voxel at (x, y, z) (Jak meters). */
+    public boolean contains(int x, int y, int z) {
+        Column c = columns.get(columnKey(x >> 4, z >> 4));
+        return c != null && c.has(x & 15, y, z & 15);
     }
 
     public Column column(int cx, int cz) {

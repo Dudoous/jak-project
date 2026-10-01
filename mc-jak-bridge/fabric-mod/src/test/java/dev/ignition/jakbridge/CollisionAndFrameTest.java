@@ -60,12 +60,17 @@ class CollisionAndFrameTest {
     @Test
     void frameReaderReadsCompleteFramesOnce() throws Exception {
         Path f = Files.createTempFile("frame", ".bin");
-        ByteBuffer b = ByteBuffer.allocate(64 + 2 * 2 * 4).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(0, FrameReader.MAGIC).putInt(4, 1).putInt(8, 2).putInt(12, 2).putInt(16, 2).putInt(20, 1);
+        int stride = 64 + 2 * 2 * 4;
+        ByteBuffer b = ByteBuffer.allocate(64 + 3 * stride).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, FrameReader.MAGIC).putInt(4, 2).putInt(12, 3).putInt(16, stride).putInt(28, 5);
+        // newest frame: number 5 in slot 2
+        int s2 = 64 + 2 * stride;
+        b.putInt(8, (5 << 2) | 2);
+        b.putInt(s2, 2).putInt(s2 + 4, 2).putInt(s2 + 8, 2).putInt(s2 + 12, FrameReader.FORMAT_BGRA8).putInt(s2 + 16, 5);
         // camera pose the frame was rendered from
-        b.putInt(28, 1).putInt(32, 77).putFloat(36, 1.5f).putFloat(40, -20f).putFloat(44, 300.25f)
-                .putFloat(48, -90f).putFloat(52, 30f).putFloat(56, 70f);
-        for (int i = 0; i < 16; i++) b.put(64 + i, (byte) i);
+        b.putInt(s2 + 20, 1).putInt(s2 + 24, 77).putFloat(s2 + 28, 1.5f).putFloat(s2 + 32, -20f).putFloat(s2 + 36, 300.25f)
+                .putFloat(s2 + 40, -90f).putFloat(s2 + 44, 30f).putFloat(s2 + 48, 70f);
+        for (int i = 0; i < 16; i++) b.put(s2 + 64 + i, (byte) i);
         Files.write(f, b.array());
 
         try (FrameReader r = new FrameReader(f)) {
@@ -73,6 +78,8 @@ class CollisionAndFrameTest {
             assertNotNull(frame);
             assertEquals(2, frame.width);
             assertEquals(2, frame.height);
+            assertEquals(5, frame.frame);
+            assertEquals(FrameReader.FORMAT_BGRA8, frame.format);
             assertEquals(16, frame.pixels.remaining());
             assertEquals(5, frame.pixels.get(5));
             assertTrue(frame.poseValid);
@@ -83,11 +90,12 @@ class CollisionAndFrameTest {
             assertEquals(30f, frame.pitch);
             assertTrue(r.stillValid(frame));
             assertTrue(r.isFresh());
+            assertEquals(5, r.framesWrittenByJak());
             assertNull(r.poll(), "same frame is not returned twice");
         }
 
-        // a frame being written (odd seq) is skipped
-        b.putInt(8, 3);
+        // a slot being written (odd seq) is skipped
+        b.putInt(s2, 3);
         Files.write(f, b.array());
         try (FrameReader r = new FrameReader(f)) {
             assertNull(r.poll());

@@ -24,6 +24,8 @@ constexpr u16 kTypeJakState = 2;  // Jak -> Minecraft
 constexpr u16 kTypeEvent = 3;     // Minecraft -> Jak, gameplay events (explosions, ...)
 // type 4 is unused (was an experimental mode)
 constexpr u16 kTypeBlocks = 5;  // Minecraft -> Jak, blocks the player built near Steve
+constexpr u16 kTypeActors = 6;  // Jak -> Minecraft, solid Jak objects near Steve (crates, doors)
+constexpr int kMaxActors = 64;
 constexpr int kMaxBlocks = 2048;
 // block kinds (bit flags)
 constexpr u32 kBlockSolid = 1;   // stops Jak's enemies
@@ -104,6 +106,14 @@ void on_chain_sent();
 
 /// Render thread: the pose of the frame being rendered right now.
 FramePose rendered_pose();
+
+/*!
+ * GOAL: (pc-mc-send-actors src count) -> int
+ * Sends the solid Jak objects near Steve (crates, closed doors) so Minecraft can make them solid.
+ * src = 8 floats per object: id, kind (1 box, 2 door slab), x, y, z (Jak meters, centre),
+ * half size (m), normal x, normal z (doors). See ACTORS in PROTOCOL.md.
+ */
+u64 goal_send_actors(u32 src, u32 count);
 
 /// True while Minecraft is connected (fresh packets) and playing in Jak's world.
 /// Safe to call from any thread.

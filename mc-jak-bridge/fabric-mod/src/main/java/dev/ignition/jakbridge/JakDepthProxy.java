@@ -20,6 +20,9 @@ import org.joml.Matrix4fStack;
  * Right after that, Jak's level shape (the same collision triangles that became barrier blocks)
  * is drawn into the depth buffer only - invisible, but anything Minecraft draws behind a Jak wall,
  * hill or building then fails the depth test, and Jak's picture shows there instead.
+ *
+ * Where the player has dug into Jak's ground (JakDigs), those cells are cut out of the shape, so
+ * the dirt and stone inside the hole show through Jak's picture.
  */
 public final class JakDepthProxy {
     private static final int RADIUS_CHUNKS = 5;
@@ -59,7 +62,8 @@ public final class JakDepthProxy {
 
         BufferBuilder bb = Tessellator.getInstance().begin(VertexFormat.DrawMode.TRIANGLES, VertexFormats.POSITION);
         int[] count = {0};
-        v.forEachTriangleListNear(cx, cz, RADIUS_CHUNKS, tris -> {
+        v.forEachTriangleListNear(cx, cz, RADIUS_CHUNKS, original -> {
+            CollisionVoxels.Triangles tris = DigCut.cut(original);
             float[] d = tris.data();
             int n = tris.count() * 9;
             for (int i = 0; i < n; i += 3) {

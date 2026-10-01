@@ -10,7 +10,12 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -168,9 +173,31 @@ public final class JakBridgeClient implements ClientModInitializer {
         });
 
         // Jak's ground is barrier blocks: don't let a left click (creative) knock holes in it.
-        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) ->
-                world.getBlockState(pos).isOf(Blocks.BARRIER) && collision.loaded()
-                        ? ActionResult.FAIL : ActionResult.PASS);
+        // Jak's ground is invisible barrier blocks. A pickaxe or shovel digs into it (it turns
+        // into dirt / stone you can mine); anything else must not knock holes in it, and the
+        // stand-ins for Jak's crates and doors can't be broken at all.
+        AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
+            BlockState s = world.getBlockState(pos);
+            if (!collision.loaded() || !(s.isOf(Blocks.BARRIER) || s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS))) {
+                return ActionResult.PASS;
+            }
+            if (!collision.isJakGround(pos)) {
+                return s.isOf(Blocks.BARRIER) ? ActionResult.FAIL : ActionResult.PASS;
+            }
+            boolean tool = player.getMainHandStack().isIn(ItemTags.PICKAXES)
+                    || player.getMainHandStack().isIn(ItemTags.SHOVELS);
+            if (!tool) return ActionResult.FAIL;
+            BlockPos at = pos.toImmutable();
+            if (world.isClient) {
+                MinecraftServer server = MinecraftClient.getInstance().getServer();
+                if (server != null) {
+                    server.execute(() -> collision.convertJakGround(server.getWorld(world.getRegistryKey()), at));
+                }
+            } else if (world instanceof ServerWorld sw) {
+                collision.convertJakGround(sw, at);
+            }
+            return ActionResult.PASS;
+        });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
                 dispatcher.register(ClientCommandManager.literal("jakcraft").executes(ctx -> {
@@ -231,6 +258,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         out.add("Jak game: " + (jakTalking ? "connected" : "NOT connected - start play.bat and load your save"));
         out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving")
                 + (jakDelayMs >= 0 ? String.format(", %.0f ms behind your mouse", jakDelayMs) : ""));
+        out.add("Picture: " + JakSky.stats());
         out.add("View: " + (viewLocked ? "locked to Jak's picture (F6 for fast)" : "fast, not locked (F6 to lock)"));
         out.add("JakCraft folder: " + (config.jakcraftDir() == null ? "unknown (run play.bat once)" : config.jakcraftDir()));
         out.add("Collision: " + collision.status());
@@ -326,6 +354,18 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
     }
 
+    /** Steve is down a hole he dug into Jak's ground (Jak then stays up on the surface). */
+    private static boolean inDugHole(ClientPlayerEntity p) {
+        if (JakDigs.isEmpty()) return false;
+        int x = MathHelper.floor(p.getX()), z = MathHelper.floor(p.getZ());
+        int feet = MathHelper.floor(p.getY() - collision.yOffset());
+        int eye = MathHelper.floor(p.getEyeY() - collision.yOffset());
+        for (int y = feet - 1; y <= eye; y++) {
+            if (JakDigs.contains(x, y, z)) return true;
+        }
+        return false;
+    }
+
     /** Send Minecraft's live camera to Jak (eye position, look direction, FOV, keys). */
     private static void sendCamera(Vec3d pos, float yawDeg, float pitchDeg) {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -354,6 +394,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
 
         int flags = BridgeSocket.FLAG_IN_WORLD | BridgeSocket.FLAG_STEVE_MODE;
+        if (inDugHole(client.player)) flags |= BridgeSocket.FLAG_IN_HOLE;
         if (client.currentScreen != null) flags |= BridgeSocket.FLAG_SCREEN_OPEN;
         // window shape (width/height * 1000) in the top 16 bits: Jak renders the same shape
         Framebuffer fb = client.getFramebuffer();
@@ -363,7 +404,9 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
 
         try {
-            int seq = bridge.sendCamera(x, y, z, yaw, pitchDeg, vfov, 0f, 0f, buttons, flags);
+            // Steve's eye height (he's scaled up in Jak's world; lower while sneaking)
+            float eye = (float) (client.player.getEyeY() - client.player.getY());
+            int seq = bridge.sendCamera(x, y, z, yaw, pitchDeg, vfov, eye, 0f, buttons, flags);
             int slot = seq & (sentSeq.length - 1);
             sentSeq[slot] = seq;
             sentNanos[slot] = System.nanoTime();
