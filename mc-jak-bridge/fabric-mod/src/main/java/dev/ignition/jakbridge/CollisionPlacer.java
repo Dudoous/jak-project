@@ -54,6 +54,10 @@ public final class CollisionPlacer {
         return status;
     }
 
+    public CollisionVoxels voxels() {
+        return voxels;
+    }
+
     public boolean loaded() {
         return voxels != null;
     }

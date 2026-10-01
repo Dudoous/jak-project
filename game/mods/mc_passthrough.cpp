@@ -34,6 +34,7 @@
 #include "common/log/log.h"
 
 #include "game/kernel/common/Ptr.h"
+#include "game/mods/mc_overlay.h"
 
 namespace mc_passthrough {
 namespace {
@@ -78,6 +79,21 @@ struct EventPacket {
   float data[5];  // explosion: x, y, z (Jak meters), radius (m), power
 };
 
+struct HostPacket {
+  u32 magic;
+  u16 version;
+  u16 type;
+  u32 seq;
+  float eye[3];
+  float yaw, pitch;
+  float feet[3];
+  float vfov;
+  u32 buttons;
+  s32 wheel;
+  u32 hotbar;
+  u32 flags;
+};
+
 struct JakStatePacket {
   u32 magic;
   u16 version;
@@ -90,6 +106,7 @@ struct JakStatePacket {
 static_assert(sizeof(CameraPacket) == 64, "CameraPacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(JakStatePacket) == 44, "JakStatePacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(EventPacket) == 36, "EventPacket layout changed - update PROTOCOL.md");
+static_assert(sizeof(HostPacket) == 64, "HostPacket layout changed - update PROTOCOL.md");
 
 // Minecraft -> Jak gameplay events, consumed by GOAL with (pc-mc-pop-event ...)
 constexpr int kMaxQueuedEvents = 64;
@@ -251,6 +268,45 @@ u64 goal_pop_event(u32 dst) {
   g_event_head = (g_event_head + 1) % kMaxQueuedEvents;
   g_event_count--;
   return type;
+}
+
+bool jak_mode_active() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (!g_have_packet || !(g_latest.flags & kFlagJakMode)) {
+    return false;
+  }
+  return clock_type::now() - g_latest_time < std::chrono::milliseconds(250);
+}
+
+u64 goal_send_host(u32 src) {
+  const float* in = Ptr<float>(src).c();
+  HostPacket pkt{};
+  pkt.magic = kMagic;
+  pkt.version = kVersion;
+  pkt.type = kTypeHost;
+  for (int i = 0; i < 3; i++) {
+    pkt.eye[i] = in[i];
+    pkt.feet[i] = in[5 + i];
+  }
+  pkt.yaw = in[3];
+  pkt.pitch = in[4];
+  pkt.vfov = in[8];
+  pkt.flags = (u32)in[9];
+  pkt.buttons = host_buttons();
+  pkt.wheel = take_host_wheel();
+  pkt.hotbar = take_host_hotbar();
+  sockaddr_in client;
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_have_client || g_sock == kBadSock) {
+      return pkt.buttons;
+    }
+    client = g_client;
+    pkt.seq = g_send_seq++;
+  }
+  sendto(g_sock, (const char*)&pkt, (int)sizeof(pkt), 0, (const sockaddr*)&client,
+         (int)sizeof(client));
+  return pkt.buttons;
 }
 
 bool steve_mode_active() {

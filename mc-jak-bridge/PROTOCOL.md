@@ -17,14 +17,14 @@ ignored.
 |-------:|------|---------|-------|
 | 0      | u32  | magic   | `0x4B4A434D` (bytes `M C J K`) |
 | 4      | u16  | version | `1` |
-| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT |
+| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `4` = HOST |
 | 8      | u32  | seq     | incrementing per sender |
 
 ## CAMERA (type 1, Minecraft → Jak, 64 bytes, sent every rendered frame)
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested, bit 3 STEVE mode requested, bits 16–31 STEVE: Minecraft window width/height × 1000 |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested, bit 3 STEVE mode requested, bit 4 JAK mode requested, bits 16–31 STEVE/JAK: Minecraft window width/height × 1000 |
 | 16     | f64  | x       | camera (eye) position, blocks. In STEVE mode: Jak meters (Minecraft Y minus `y_offset`) |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
@@ -66,6 +66,20 @@ arrives for 500 ms, Minecraft behaves normally.
 | 16 | f32[5] | data | explosion: x, y, z (Jak meters), radius (m), power |
 
 Queued by the runtime (up to 64) and handled by GOAL each frame with `(pc-mc-pop-event ptr)`.
+
+## HOST (type 4, Jak → Minecraft, 64 bytes, every frame in JAK mode)
+
+| Offset | Type | Field | Notes |
+|-------:|------|-------|-------|
+| 12 | f32[3] | eye | Jak's first-person camera position (Jak meters) |
+| 24 | f32 | yaw | Minecraft convention, degrees |
+| 28 | f32 | pitch | Minecraft convention, degrees (+ = down) |
+| 32 | f32[3] | feet | Jak's position (Jak meters); Steve is placed here |
+| 44 | f32 | vfov | echo of Minecraft's FOV |
+| 48 | u32 | buttons | mouse held in Jak's window: 1 left, 2 right, 4 middle |
+| 52 | s32 | wheel | wheel steps since the last packet (+ = up) |
+| 56 | u32 | hotbar | number key 1–9 pressed since the last packet, 0 = none |
+| 60 | u32 | flags | reserved |
 
 ## Implementations
 

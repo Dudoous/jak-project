@@ -69,7 +69,37 @@ public final class CollisionVoxels {
         void accept(int localX, int y, int localZ);
     }
 
+    /** Growable list of triangles, 9 floats each (x y z of 3 corners, Jak meters). */
+    public static final class Triangles {
+        float[] data = new float[9 * 16];
+        int floats = 0;
+
+        void add(double ax, double ay, double az, double bx, double by, double bz, double cx, double cy, double cz) {
+            if (floats + 9 > data.length) data = java.util.Arrays.copyOf(data, data.length * 2);
+            data[floats++] = (float) ax; data[floats++] = (float) ay; data[floats++] = (float) az;
+            data[floats++] = (float) bx; data[floats++] = (float) by; data[floats++] = (float) bz;
+            data[floats++] = (float) cx; data[floats++] = (float) cy; data[floats++] = (float) cz;
+        }
+
+        public int count() {
+            return floats / 9;
+        }
+
+        public float[] data() {
+            return data;
+        }
+    }
+
+    public interface TrianglesConsumer {
+        void accept(Triangles tris);
+    }
+
+    /** Triangles bigger than this many chunk columns go in one shared list. */
+    private static final int BIG_TRIANGLE_COLUMNS = 64;
+
     private final Map<Long, Column> columns = new HashMap<>();
+    private final Map<Long, Triangles> columnTriangles = new HashMap<>();
+    private final Triangles bigTriangles = new Triangles();
     private long triangles = 0;
     private int files = 0;
     private double minY = Double.POSITIVE_INFINITY;
@@ -77,6 +107,23 @@ public final class CollisionVoxels {
 
     public static long columnKey(int cx, int cz) {
         return ((long) cx << 32) ^ (cz & 0xffffffffL);
+    }
+
+    /**
+     * Every triangle list touching the chunk columns within radiusChunks of (x, z), plus the big
+     * triangles. A triangle that spans several columns is reported once per column (harmless for
+     * depth-only drawing).
+     */
+    public void forEachTriangleListNear(double x, double z, int radiusChunks, TrianglesConsumer out) {
+        int pcx = (int) Math.floor(x) >> 4;
+        int pcz = (int) Math.floor(z) >> 4;
+        for (int dx = -radiusChunks; dx <= radiusChunks; dx++) {
+            for (int dz = -radiusChunks; dz <= radiusChunks; dz++) {
+                Triangles t = columnTriangles.get(columnKey(pcx + dx, pcz + dz));
+                if (t != null) out.accept(t);
+            }
+        }
+        if (bigTriangles.count() > 0) out.accept(bigTriangles);
     }
 
     public Column column(int cx, int cz) {
@@ -132,6 +179,22 @@ public final class CollisionVoxels {
         if (nlen < 1e-9) {
             return; // degenerate
         }
+        // keep the triangle itself too, for the depth proxy (Minecraft hides its blocks behind Jak's walls)
+        int cx0 = (int) Math.floor(Math.min(ax, Math.min(bx, cx))) >> 4;
+        int cx1 = (int) Math.floor(Math.max(ax, Math.max(bx, cx))) >> 4;
+        int cz0 = (int) Math.floor(Math.min(az, Math.min(bz, cz))) >> 4;
+        int cz1 = (int) Math.floor(Math.max(az, Math.max(bz, cz))) >> 4;
+        if ((long) (cx1 - cx0 + 1) * (cz1 - cz0 + 1) > BIG_TRIANGLE_COLUMNS) {
+            bigTriangles.add(ax, ay, az, bx, by, bz, cx, cy, cz);
+        } else {
+            for (int tx = cx0; tx <= cx1; tx++) {
+                for (int tz = cz0; tz <= cz1; tz++) {
+                    columnTriangles.computeIfAbsent(columnKey(tx, tz), k -> new Triangles())
+                            .add(ax, ay, az, bx, by, bz, cx, cy, cz);
+                }
+            }
+        }
+
         // floors (either winding): sample half a voxel lower so the voxel below the surface is used
         double yShift = Math.abs(ny / nlen) > FLOOR_NORMAL_Y ? -0.5 : 0.0;
 

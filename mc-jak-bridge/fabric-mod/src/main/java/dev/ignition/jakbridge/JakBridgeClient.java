@@ -10,6 +10,7 @@ import net.minecraft.util.ActionResult;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
@@ -30,7 +31,10 @@ import java.io.IOException;
 /**
  * Client side of JakCraft (Jak x Minecraft passthrough).
  *
- * STEVE mode (default): you play Minecraft inside Jak's world. Minecraft does all the gameplay
+ * JAK mode (default): you play Jak and Daxter in Jak's window. Steve is your body's "skin": his
+ * hand, held item, hotbar, blocks and Minecraft's mobs are rendered by Minecraft from Jak's camera
+ * and drawn on top of Jak's frame (see JakHost); clicks / wheel / 1-9 in Jak's window drive Minecraft.
+ * STEVE mode: you play Minecraft inside Jak's world. Minecraft does all the gameplay
  * (movement, blocks, hotbar, mobs); Jak renders his world from Steve's eyes and that image replaces
  * Minecraft's sky; Jak's level collision becomes invisible barrier blocks so Steve walks on Jak's
  * ground. Jak himself is hidden.
@@ -45,7 +49,8 @@ public final class JakBridgeClient implements ClientModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
 
     public enum Mode {
-        STEVE("STEVE mode: Minecraft gameplay in Jak's world"),
+        JAK("JAK mode: play in Jak's window with Steve's Minecraft gameplay on top"),
+        STEVE("STEVE mode: Minecraft gameplay in Jak's world, in the Minecraft window"),
         BODY("BODY mode: your keys drive Jak"),
         FREE("FREE mode: Jak's camera follows Steve");
 
@@ -67,7 +72,7 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static JakCraftConfig config;
     private static CollisionPlacer collision;
     private static boolean streaming = true;
-    private static volatile Mode mode = Mode.STEVE;
+    private static volatile Mode mode = Mode.JAK;
     private static KeyBinding toggleKey;
     private static KeyBinding modeKey;
     private static KeyBinding respawnKey;
@@ -78,8 +83,18 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static String lastWarningShown = null;
     private static float lastJakDamage = -1f;
 
+    private static boolean playerHeldByJak = false;
+
     public static Mode mode() {
         return mode;
+    }
+
+    public static BridgeSocket bridge() {
+        return bridge;
+    }
+
+    public static CollisionPlacer collision() {
+        return collision;
     }
 
     @Override
@@ -115,7 +130,19 @@ public final class JakBridgeClient implements ClientModInitializer {
         respawnKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.jakbridge.respawn", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F7, "category.jakbridge"));
 
+        ClientTickEvents.START_CLIENT_TICK.register(client -> JakHost.injectInput(client, bridge));
         ClientTickEvents.END_CLIENT_TICK.register(JakBridgeClient::onEndTick);
+        ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
+            // JAK mode: you play in Jak's window, so Minecraft must keep running unfocused
+            client.options.pauseOnLostFocus = false;
+        });
+        WorldRenderEvents.START.register(JakHost::rememberMatrices);
+        HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
+            if (JakHost.active()) {
+                drawContext.draw(); // flush the HUD so it's in the frame we copy
+                JakHost.exportFrame();
+            }
+        });
 
         // Jak's ground is barrier blocks: don't let a left click (creative) knock holes in it.
         AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) ->
@@ -162,7 +189,11 @@ public final class JakBridgeClient implements ClientModInitializer {
         BridgeSocket.JakState any = bridge == null ? null : bridge.latestJakState();
         boolean jakTalking = any != null && System.nanoTime() - any.receivedNanos < JAK_STATE_TIMEOUT_NANOS;
         out.add("Jak game: " + (jakTalking ? "connected" : "NOT connected - start play.bat and load your save"));
-        out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving"));
+        if (mode == Mode.JAK) {
+            out.add("Jak camera/body: " + (JakHost.active() ? "receiving (play in Jak's window)" : "not receiving - get into gameplay in Jak"));
+        } else {
+            out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving"));
+        }
         out.add("JakCraft folder: " + (config.jakcraftDir() == null ? "unknown (run play.bat once)" : config.jakcraftDir()));
         out.add("Collision: " + collision.status());
         if (collision.worldWarning() != null) out.add("World: " + collision.worldWarning());
@@ -186,7 +217,9 @@ public final class JakBridgeClient implements ClientModInitializer {
 
     /** Used by KeyboardInputMixin: in BODY mode Jak drives the body, Steve must not walk by himself. */
     public static boolean isSuppressingMovement() {
-        return streaming && mode == Mode.BODY && freshState(BridgeSocket.JAK_FLAG_BODY) != null;
+        if (!streaming) return false;
+        if (mode == Mode.JAK) return JakHost.active();
+        return mode == Mode.BODY && freshState(BridgeSocket.JAK_FLAG_BODY) != null;
     }
 
     private static void onEndTick(MinecraftClient client) {
@@ -209,7 +242,7 @@ public final class JakBridgeClient implements ClientModInitializer {
 
         // collision status: progress on the action bar, the final result once in chat
         String status = collision.status();
-        if (mode == Mode.STEVE && !status.equals(lastStatusShown)) {
+        if ((mode == Mode.STEVE || mode == Mode.JAK) && !status.equals(lastStatusShown)) {
             boolean finalResult = collision.loaded() || !status.startsWith("loading");
             player.sendMessage(Text.literal("[JakCraft] " + status), !finalResult);
             toldStatus = true;
@@ -226,8 +259,18 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
         lastWarningShown = warning;
 
+        // JAK mode: Steve rides along with Jak (also updated every frame by CameraMixin)
+        boolean jak = streaming && JakHost.active();
+        if (jak) {
+            JakHost.applyToPlayer(player, collision.yOffset());
+            playerHeldByJak = true;
+        } else if (playerHeldByJak) {
+            JakHost.releasePlayer(player);
+            playerHeldByJak = false;
+        }
+
         boolean steve = streaming && mode == Mode.STEVE && freshState(BridgeSocket.JAK_FLAG_STEVE) != null;
-        collision.setSteveActive(steve);
+        collision.setSteveActive(steve || jak);
         if (!steve) {
             JakWater.clear();
         }
@@ -317,8 +360,9 @@ public final class JakBridgeClient implements ClientModInitializer {
             buttons = 0;
         }
         if (mode == Mode.BODY) flags |= BridgeSocket.FLAG_BODY_MODE;
-        if (mode == Mode.STEVE) {
-            flags |= BridgeSocket.FLAG_STEVE_MODE;
+        if (mode == Mode.JAK) flags |= BridgeSocket.FLAG_JAK_MODE;
+        if (mode == Mode.STEVE || mode == Mode.JAK) {
+            if (mode == Mode.STEVE) flags |= BridgeSocket.FLAG_STEVE_MODE;
             // window shape (width/height * 1000) in the top 16 bits: Jak renders the same shape
             Framebuffer fb = client.getFramebuffer();
             if (fb != null && fb.textureHeight > 0) {

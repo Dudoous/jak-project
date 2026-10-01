@@ -41,6 +41,7 @@
 (define-extern pc-mc-get-camera (function (pointer float) int))
 (define-extern pc-mc-send-state (function (pointer float) int))
 (define-extern pc-mc-pop-event (function (pointer float) int))
+(define-extern pc-mc-send-host (function (pointer float) int))
 
 (defconstant MC_RAW_X 0)
 (defconstant MC_RAW_Y 1)
@@ -59,6 +60,10 @@
 (defconstant MC_FLAG_SCREEN_OPEN 2)
 (defconstant MC_FLAG_BODY_MODE 4)
 (defconstant MC_FLAG_STEVE_MODE 8)
+(defconstant MC_FLAG_JAK_MODE 16)
+
+;; mouse buttons from Jak's window (pc-mc-send-host)
+(defconstant MC_HOST_ATTACK 1)
 
 ;; CAMERA packet buttons
 (defconstant MC_BUTTON_JUMP 1)
@@ -100,6 +105,11 @@
    (saved-aspect-x int32)
    (saved-aspect-y int32)
    (event        float 5)
+   (host         float 10)  ;; JAK mode: camera + body sent to Minecraft
+   (look-yaw     float)     ;; JAK mode first-person look (Jak heading, rotation units)
+   (look-pitch   float)     ;; JAK mode, degrees, + = down (Minecraft convention)
+   (look-speed   float)     ;; JAK mode, degrees per second at full right-stick / mouse
+   (prev-host-buttons int32)
    (raw          float 12)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
    (out          float 8)   ;; JAK_STATE payload
    (anchor-mc    vector :inline)
@@ -120,13 +130,15 @@
        :timeout-ms 250.0
        :scale (meters 1.0)
        :eye-height (meters 1.62)
-       :melee-reach (meters 4.5)))
+       :melee-reach (meters 4.5)
+       :look-speed 240.0))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; helpers
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define-extern mc-restore-aspect! (function mc-passthrough-state none))
+(define-extern mc-jak-grabbed? (function symbol))
 
 (defun mc-yaw->jak-heading ((st mc-passthrough-state) (yaw-deg float))
   "Convert a Minecraft yaw (degrees) to a Jak heading (rotation units, as (atan x z))."
@@ -142,6 +154,9 @@
 (defun mc-requested-mode ((st mc-passthrough-state))
   "The mode Minecraft asks for. #f if it needs Jak but there is no Jak yet (title screen, loading)."
   (cond
+    ;; JAK mode steps aside for cutscenes and anything else that takes control of Jak
+    ((mc-packet-flag? st MC_FLAG_JAK_MODE)
+     (if (and *target* (not (movie?)) (not (mc-jak-grabbed?))) 'jak #f))
     ((mc-packet-flag? st MC_FLAG_STEVE_MODE) (if *target* 'steve #f))
     ((mc-packet-flag? st MC_FLAG_BODY_MODE) (if *target* 'body #f))
     (else 'free)))
@@ -165,7 +180,7 @@
   (none))
 
 (defun mc-jak-grabbed? ()
-  (and *target* (logtest? (-> *target* state-flags) (state-flags grabbed))))
+  (if (and *target* (logtest? (-> *target* state-flags) (state-flags grabbed))) #t #f))
 
 (defun mc-passthrough-activate! ((st mc-passthrough-state) (mode symbol))
   "Start a mode. FREE/BODY lock the current Minecraft pose to Jak's current pose; STEVE uses fixed
@@ -186,6 +201,13 @@
      (set! (-> st parked?) #f)
      (send-event *target* 'change-mode 'grab))
     (('body) (mc-jak-eye! (-> st anchor-jak) st))
+    (('jak)
+     ;; first person, looking where Jak's camera looked; the mouse / right stick turns it.
+     (set! (-> st look-yaw) (+ (-> st yaw-offset) (mc-yaw->jak-heading st (-> st raw MC_RAW_YAW))))
+     (set! (-> st look-pitch) 0.0)
+     (set! (-> st prev-host-buttons) 0)
+     ;; the mouse moves the camera (OpenGOAL turns it into right-stick input)
+     (pc-set-mouse-options! #t #t (-> *pc-settings* mouse-movement?)))
     (else
      (if *camera-combiner*
        (set! (-> st anchor-jak quad) (-> *camera-combiner* trans quad))
@@ -199,8 +221,9 @@
 (defun mc-passthrough-release! ((st mc-passthrough-state))
   "Hand everything back to Jak."
   (when (-> st mode)
-    (when (or (= (-> st mode) 'body) (= (-> st mode) 'steve))
+    (when (or (= (-> st mode) 'body) (= (-> st mode) 'steve) (= (-> st mode) 'jak))
       (mc-set-jak-hidden! #f))
+    (if (= (-> st mode) 'jak) (update-mouse-controls! *pc-settings*))
     (if (and (= (-> st mode) 'steve) (mc-jak-grabbed?)) (send-event *target* 'end-mode))
     (mc-restore-aspect! st)
     (format 0 "[mc-passthrough] camera returned to Jak~%"))
@@ -345,6 +368,53 @@
     (set! (-> st prev-buttons) buttons))
   (none))
 
+(defun mc-stick-axis ((v uint))
+  "PS2 stick byte (0..255, 128 centre) to -1..1 with a small deadzone."
+  (let ((f (/ (the float (- (the int v) 128)) 127.0)))
+    (if (< (fabs f) 0.12) 0.0 (fmax -1.0 (fmin 1.0 f)))))
+
+(defun mc-passthrough-jak-look! ((st mc-passthrough-state))
+  "JAK mode: turn the first-person view with the mouse / right stick of controller 0."
+  (let* ((pad (-> *cpad-list* cpads 0))
+         (dt (seconds-per-frame))
+         (rate (* (-> st look-speed) dt)))
+    ;; stick right = turn right (Jak heading decreases, like Minecraft yaw increasing)
+    (-! (-> st look-yaw) (degrees (* rate (mc-stick-axis (-> pad rightx)))))
+    ;; stick down = look down (Minecraft pitch increases)
+    (set! (-> st look-pitch) (fmax -89.5 (fmin 89.5 (+ (-> st look-pitch) (* rate (mc-stick-axis (-> pad righty))))))))
+  (none))
+
+(defun mc-passthrough-jak-gameplay! ((st mc-passthrough-state))
+  "JAK mode, every frame after the pose is known: send camera + body to Minecraft, punch on click."
+  (mc-sync-aspect! st)
+  (mc-process-events! st)
+  (let ((inv-s (/ 1.0 (-> st scale)))
+        (feet (new 'stack-no-clear 'vector)))
+    (set! (-> feet quad) (-> *target* control trans quad))
+    (set! (-> st host 0) (* inv-s (-> st pos x)))
+    (set! (-> st host 1) (* inv-s (-> st pos y)))
+    (set! (-> st host 2) (* inv-s (-> st pos z)))
+    ;; Minecraft yaw = -heading (see mc-yaw->jak-heading), wrapped to -180..180
+    (let ((yaw (* (/ 360.0 DEGREES_PER_ROT) (- (-> st look-yaw)))))
+      (while (< 180.0 yaw) (-! yaw 360.0))
+      (while (< yaw -180.0) (+! yaw 360.0))
+      (set! (-> st host 3) yaw))
+    (set! (-> st host 4) (-> st look-pitch))
+    (set! (-> st host 5) (* inv-s (-> feet x)))
+    (set! (-> st host 6) (* inv-s (-> feet y)))
+    (set! (-> st host 7) (* inv-s (-> feet z)))
+    (set! (-> st host 8) (-> st raw MC_RAW_VFOV))
+    (set! (-> st host 9) 0.0))
+  (let ((buttons (pc-mc-send-host (&-> st host 0))))
+    ;; left click: Steve's sword hits the Jak enemy in front of him (Minecraft breaks blocks too)
+    (when (and (logtest? buttons MC_HOST_ATTACK)
+               (or (not (logtest? (-> st prev-host-buttons) MC_HOST_ATTACK))
+                   (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
+      (set-time! (-> st last-attack-time))
+      (mc-steve-melee! st))
+    (set! (-> st prev-host-buttons) buttons))
+  (none))
+
 (set! *mc-passthrough-attack-hook* mc-steve-attacked)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -415,7 +485,15 @@
          (pitch (degrees (fmax -89.5 (fmin 89.5 (-> st raw MC_RAW_PITCH)))))
          (cp (cos pitch))
          (sp (sin pitch)))
+    (when (= (-> st mode) 'jak)
+      (set! heading (-> st look-yaw))
+      (set! pitch (degrees (fmax -89.5 (fmin 89.5 (-> st look-pitch)))))
+      (set! cp (cos pitch))
+      (set! sp (sin pitch)))
     (case (-> st mode)
+      (('jak)
+       ;; Jak's physics decides where we are; eyes at Steve's height above Jak's feet.
+       (mc-jak-eye! (-> st pos) st))
       (('steve)
        ;; Minecraft already sends Jak-space meters.
        (set-vector! (-> st pos)
@@ -491,6 +569,7 @@
 (defun mc-passthrough-apply! ((mcam math-camera))
   "Overwrite the math camera with the Minecraft view. Called from update-camera."
   (let ((st *mc-passthrough*))
+    (if (= (-> st mode) 'jak) (mc-passthrough-jak-look! st))
     (mc-passthrough-compute-pose! st)
     (set! (-> mcam trans quad) (-> st pos quad))
     (forward-down->inv-matrix (-> mcam inv-camera-rot) (-> st fwd) (new 'static 'vector :y -1.0))
@@ -523,7 +602,10 @@
        (set! (-> st out 7) (mc-water-surface st)))
       (('body)
        (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
-       (mc-passthrough-body-state! st)))
+       (mc-passthrough-body-state! st))
+      (('jak)
+       (if (-> st hide-jak?) (mc-set-jak-hidden! #t))
+       (mc-passthrough-jak-gameplay! st)))
     (pc-mc-send-state (&-> st out 0))
     (when (-> st debug?)
       ;; GOAL calls are limited to 8 arguments, so this is split up.

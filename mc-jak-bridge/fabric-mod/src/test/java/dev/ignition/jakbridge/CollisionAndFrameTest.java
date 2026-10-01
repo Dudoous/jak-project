@@ -48,6 +48,33 @@ class CollisionAndFrameTest {
         assertEquals(100, cells.size(), "floor covers every 1x1 m cell");
         assertEquals(Set.of(9), ys, "block at y=9 has its top at Jak's floor (10)");
         assertTrue(v.column(1, 0).count() >= 12, "wall is solid");
+
+        int[] near = {0};
+        v.forEachTriangleListNear(0, 0, 0, t -> near[0] += t.count());
+        assertEquals(2, near[0], "both floor triangles are kept for the depth proxy at the origin");
+        int[] far = {0};
+        v.forEachTriangleListNear(500, 500, 1, t -> far[0] += t.count());
+        assertEquals(0, far[0], "nothing far away");
+    }
+
+    @Test
+    void minecraftFrameWriterProducesTheHeaderJakExpects() throws Exception {
+        Path f = Files.createTempFile("mcframe", ".bin");
+        try (McFrameWriter w = new McFrameWriter(f)) {
+            ByteBuffer px = w.begin(3, 2);
+            assertNotNull(px);
+            assertEquals(24, px.remaining());
+            for (int i = 0; i < 24; i++) px.put((byte) i);
+            w.end();
+            assertNull(w.begin(5000, 10), "too big for the shared buffer");
+        }
+        ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(f)).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(McFrameWriter.MAGIC, b.getInt(0));
+        assertEquals(1, b.getInt(4));
+        assertEquals(0, b.getInt(8) & 1, "seq is even = frame complete");
+        assertEquals(3, b.getInt(12));
+        assertEquals(2, b.getInt(16));
+        assertEquals(23, b.get(64 + 23));
     }
 
     @Test

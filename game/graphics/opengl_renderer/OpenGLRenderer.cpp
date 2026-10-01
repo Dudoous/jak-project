@@ -27,6 +27,7 @@
 #include "game/graphics/opengl_renderer/sprite/Sprite3.h"
 #include "game/graphics/pipelines/opengl.h"
 #include "game/mods/mc_frame_share.h"
+#include "game/mods/mc_overlay.h"
 
 #include "third-party/imgui/imgui.h"
 #include "third-party/imgui/imgui_stdlib.h"
@@ -1040,6 +1041,16 @@ void OpenGLRenderer::render(DmaFollower dma, const RenderOptions& settings) {
   }
 
   m_last_pmode_alp = settings.pmode_alp_register;
+
+  // Minecraft passthrough (JAK mode): draw Steve's hand, blocks, mobs and HUD over Jak's frame.
+  {
+    g_current_renderer = "mc-overlay";
+    auto prof = m_profiler.root()->make_scoped_child("mc-overlay");
+    mc_passthrough::draw_mc_overlay_if_wanted(m_render_state.draw_offset_x,
+                                              m_render_state.draw_offset_y,
+                                              settings.draw_region_width,
+                                              settings.draw_region_height);
+  }
 
   // Minecraft passthrough (STEVE mode): hand the finished frame to Minecraft.
   {

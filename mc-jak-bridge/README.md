@@ -1,62 +1,49 @@
-# JakCraft — Minecraft gameplay inside Jak and Daxter's world
+# JakCraft — Steve's Minecraft gameplay inside Jak and Daxter
 
-**STEVE mode (default):** you play real Minecraft — Steve's movement and physics, placing and
-breaking blocks, hotbar, inventory, mobs — and the world around you is Jak and Daxter's world.
-Jak is gone.
+**JAK mode (default): you play Jak and Daxter, in Jak's window — as Steve.** Same idea as the
+universal-modder Minecraft × GTA V passthrough: the host game (Jak) is the game you play and see,
+and Minecraft runs in the background adding Steve on top:
 
-How it works:
+- **First person, Steve's body:** Jak is hidden; the camera is at Steve's eye height and the mouse
+  looks around. You move with Jak's controls and Jak's physics (walls, ledges, swimming, double
+  jump), and Steve is placed at Jak's body every frame.
+- **Steve's hand, held item, hotbar, health and Minecraft's blocks and mobs are drawn into Jak's
+  window**, rendered by Minecraft from exactly Jak's camera. Minecraft hides its blocks behind
+  Jak's walls (it knows Jak's level shape), so they sit *in* Jak's world.
+- **Mouse in Jak's window → Minecraft:** left click breaks blocks / attacks, right click places
+  blocks / uses items, middle click picks a block, wheel and **1–9** change the hotbar slot.
+- **Fighting Jak's enemies:** left click kills the Jak enemy in front of Steve (sword or fist);
+  TNT and other Minecraft explosions kill Jak enemies in the blast.
+- Jak's level collision becomes invisible barrier blocks in Minecraft, so blocks can be placed
+  on Jak's ground and walls, and Minecraft mobs walk on Jak's world.
 
 ```
-            camera (eyes, look, FOV) every frame ──UDP──▶
- Minecraft  ◀──────── Jak's rendered frame (shared memory) ────────  OpenGOAL (Jak)
- (the game)                                                         renders its world from
-  · draws Jak's frame where the sky would be                        Steve's eyes, Jak hidden
-  · draws blocks / hand / mobs / HUD on top
-  · Jak's level collision = invisible barrier blocks (exported from your disc during setup)
+ Jak (you play here) ── camera + body + clicks/wheel/1-9 ──UDP──▶ Minecraft (background)
+   draws Minecraft's frame on top  ◀── frame with hand/blocks/HUD (shared memory) ──
 ```
 
-- You play in the **Minecraft window**. The Jak window stays open behind it (don't minimise it).
-- Jak's collision is exported during setup (`play.bat`) and turned into invisible barrier blocks,
-  so Steve walks on Jak's ground, bumps into Jak's walls and can place blocks on Jak's world.
-  Slopes become 1-block steps, and Steve's step height is raised so he walks up them.
-- Jak himself is hidden and frozen; he's only dragged along under Steve so Jak's levels, music
-  and enemies keep loading around you.
-- **Fighting:** left-click (any item or fist) kills the Jak enemy you're looking at within
-  ~4.5 m. **TNT and other Minecraft explosions** kill Jak enemies in the blast. Enemies chase and
-  hit Steve (Minecraft damage); lava, dark eco and other deadly Jak things kill Steve. Jak's orbs
-  are collected when Steve walks over them. You respawn where you entered Jak's world.
-- **Water:** Jak's water is swimmable — Minecraft swimming, sinking and drowning in Jak's lakes and sea.
-
-Keys in Minecraft: **F7** puts Steve back where Jak was standing (if you fall off the world),
-**F9** cycles STEVE → BODY → FREE mode, **F8** turns the bridge off.
-BODY mode = your keys drive Jak with Jak's physics. FREE mode = Jak's camera just follows Steve.
+Other modes (**F9** in the Minecraft window cycles them): **STEVE** = play in the Minecraft
+window with Minecraft's own movement in Jak's world; **BODY** = Minecraft's keys drive Jak;
+**FREE** = Jak's camera follows Steve.
 
 ## Quick start (prebuilt Windows package)
 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
-   Jak's collision). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.4.0.jar` (from the
+   Jak's level shape). Later runs start straight away.
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.5.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
-3. Minecraft settings (once):
-   - Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics **Fancy** (not Fabulous).
-   - Make the Minecraft window the **same shape** as Jak's (both 16:9 is easiest).
-4. Create a world: Singleplayer → Create New World → World tab → World Type
-   **JakCraft (Jak's world)**. (It's an empty world 4064 blocks tall, so all of Jak's world —
-   from Sunken City's depths to the top of Snowy Mountain — fits. Normal worlds are only 384
-   blocks tall and most of Jak's ground would be missing.) Creative or Survival both work.
-5. Play: run `play.bat`, load your save and get into gameplay. Then join the Minecraft world.
-   Chat shows `[JakCraft] Jak collision ready ...` and Steve is placed where Jak was standing.
+3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
+   **Fancy** (not Fabulous).
+4. In Minecraft create a world: Singleplayer → Create New World → World tab → World Type
+   **JakCraft (Jak's world)** (4064 blocks tall, so all of Jak's world fits). **Creative** is
+   easiest. Fill your hotbar with the blocks/items you want now (open the inventory in the
+   Minecraft window) — you'll pick them with the wheel / 1–9 from Jak's window.
+5. Run `play.bat`, load your save and get into gameplay. Make the Minecraft window about the
+   same size as Jak's and keep it open behind (don't minimise it). Click into **Jak's window**
+   and play. (The mod turns on Jak's mouse-camera for you while JAK mode is active.)
 
-Type **`/jakcraft`** in chat at any time to see what's connected and what's missing (Jak game,
-Jak picture, collision files, world height, your position, water).
-
-If the chat says the JakCraft folder is unknown, run `play.bat` once (it records its location),
-or put `jakcraft_dir=C:/path/to/JakCraft` (forward slashes) in `.minecraft\config\jakbridge.properties`.
-
-`config\jakbridge.properties` also has: `visible_collision=true` (glass instead of invisible
-barriers, to check the collision lines up with Jak's world) and `collision_radius=8` (chunks).
-Jak's picture is rendered at the Minecraft window's shape automatically.
+Type **`/jakcraft`** in Minecraft's chat to see what's connected and what's missing.
 
 ## What's in here
 
@@ -80,13 +67,12 @@ Jak's picture is rendered at the Minecraft window's shape automatically.
 
 ## Known limitations
 
-- **Your blocks always draw in front of Jak's world**, even when a Jak wall is between you and
-  them (Minecraft doesn't know how far away Jak's pixels are). Fixing this needs Jak's depth buffer
-  shared too — next step.
-- Jak's view lags a frame or two behind Minecraft's when you turn fast.
-- Moving platforms, elevators and doors in Jak's world aren't solid for Steve (only static level
-  collision is exported).
-- Breaking Jak's world isn't possible (it's barrier blocks); you build on top of it.
-- Jak's enemies walk through Minecraft blocks you place (they only know Jak's own collision), and
-  only Jak's regular enemies can be killed — bosses don't react to Steve yet.
-- Water has no Minecraft underwater fog (you see Jak's own underwater view).
+- **Blocks you place are not solid for Jak yet** — in JAK mode you walk through them, and Jak's
+  enemies walk through them too (Jak's physics only knows Jak's own level). That's the next step.
+- Minecraft's inventory screen isn't shown in Jak's window: set up your hotbar in the Minecraft
+  window, then pick with the wheel / 1–9.
+- Minecraft's layer can trail Jak's camera by a frame when you turn quickly.
+- Hiding blocks behind Jak's walls uses Jak's collision shape, which is a bit simpler than what you
+  see — edges can be slightly off.
+- Moving platforms, elevators and doors in Jak's world aren't known to Minecraft.
+- Only Jak's regular enemies can be killed by Steve; bosses don't react yet.

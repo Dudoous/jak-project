@@ -26,3 +26,11 @@ frame was torn and the next one replaces it.
 
 Implementations: `game/mods/mc_frame_share.cpp` (writer, `glReadPixels` of the window back buffer
 after Jak's frame is finished), `fabric-mod/.../FrameReader.java` + `JakSky.java` (reader).
+
+## Minecraft → Jak (JAK mode)
+
+The other direction uses the same layout in `%TEMP%\jakcraft-mc-frame.bin` (override:
+`JAKCRAFT_MC_FRAME_FILE`), magic `0x5246434D` (`M C F R`), created by the Fabric mod
+(`McFrameWriter.java`, filled by `JakHost.exportFrame` after the HUD is drawn). Pixels are
+premultiplied alpha: transparent where Jak's world should show. OpenGOAL blends it over its
+finished frame (`game/mods/mc_overlay.cpp`).
