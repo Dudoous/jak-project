@@ -24,6 +24,11 @@ public final class BridgeSocket implements AutoCloseable {
 
     public static final int FLAG_IN_WORLD = 1;
     public static final int FLAG_SCREEN_OPEN = 2;
+    /** Ask Jak for BODY mode: Jak's physics moves you, Minecraft keys drive Jak. */
+    public static final int FLAG_BODY_MODE = 4;
+
+    /** JAK_STATE flag: Jak is in BODY mode, data[0..2] is where the Minecraft eyes should be. */
+    public static final int JAK_FLAG_BODY = 1;
 
     public static final int BUTTON_JUMP = 1;
     public static final int BUTTON_SNEAK = 2;

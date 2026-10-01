@@ -1,4 +1,5 @@
 {
   "key.jakbridge.toggle": "Toggle Jak bridge",
-  "category.jakbridge": "Jak Bridge"
+  "category.jakbridge": "Jak Bridge",
+  "key.jakbridge.body_mode": "Toggle Jak BODY / FREE mode"
 }

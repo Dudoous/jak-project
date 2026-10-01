@@ -24,7 +24,7 @@ ignored.
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 2 BODY mode requested |
 | 16     | f64  | x       | camera (eye) position, blocks |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
@@ -42,10 +42,11 @@ The runtime considers Minecraft "connected" while the newest CAMERA packet is yo
 
 | Offset | Type   | Field | Notes |
 |-------:|--------|-------|-------|
-| 12     | f32[8] | data  | `[0..2]` position in Minecraft coordinates, `[3]` yaw, `[4]` health, `[5]` flags, `[6..7]` reserved |
+| 12     | f32[8] | data  | `[0..2]` where the Minecraft player's **eyes** should be (Minecraft coordinates), `[3]` yaw echo, `[4]` Jak health, `[5]` flags (bit 0 = BODY mode active), `[6..7]` reserved |
 
-Sent from GOAL with `(pc-mc-send-state ptr)`. Not used yet by milestone 1; it is there so the
-Jak-drives-the-body mode (milestone 2) can teleport the Minecraft player to where Jak is.
+Sent every frame from GOAL with `(pc-mc-send-state ptr)` while BODY mode is active. The Fabric mod
+teleports the player there each tick (subtracting its current eye height to get the feet) and
+zeroes Steve's own movement input. If no JAK_STATE arrives for 500 ms, Minecraft behaves normally.
 
 ## Implementations
 

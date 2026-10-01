@@ -1,7 +1,22 @@
 # Jak Bridge — Minecraft × Jak and Daxter passthrough
 
-Milestone 1: **Minecraft's first-person camera drives Jak's camera.** Look around and move in
-Minecraft, and Jak's world (running in OpenGOAL) follows your view in real time.
+**Milestone 2 — BODY mode (default): you are Steve inside Jak's world.** Minecraft's keys drive Jak,
+so Jak's physics and collision decide where you go (walls, floors, ledges, water). The camera is
+first person at Jak's head, looking wherever you look in Minecraft, with Jak and Daxter hidden.
+Steve is teleported to follow Jak in the Minecraft world.
+
+| Minecraft | Jak |
+|-----------|-----|
+| W A S D | move (relative to where you look) |
+| Space | jump (X) |
+| Shift | crouch / roll (R1) |
+| Left click | punch (square) |
+| Right click | spin kick (circle) |
+| Mouse | look |
+| **F9** | switch BODY ⇄ FREE mode |
+| **F8** | bridge on/off |
+
+FREE mode is milestone 1: Steve moves normally in Minecraft and Jak's camera follows him.
 
 ```
 Minecraft + jakbridge (Fabric)  ──UDP 127.0.0.1:47800──▶  OpenGOAL gk (C++ listener)
@@ -106,20 +121,21 @@ streaming on/off.
 | `(mc-reanchor)` | snap back to Jak's camera and re-lock Minecraft's origin there |
 | `(mc-off)` / `(mc-on)` | ignore Minecraft / follow Minecraft |
 | `(set! (-> *mc-passthrough* scale) (meters 2.0))` | 1 Minecraft block = 2 Jak meters |
-| `(set! (-> *mc-passthrough* mirror-x?) #f)` | flip left/right if it ever feels mirrored |
+| `(set! (-> *mc-passthrough* mirror-x?) #t)` | flip left/right if it ever feels mirrored |
+| `(set! (-> *mc-passthrough* eye-height) (meters 1.2))` | BODY mode camera height |
+| `(set! (-> *mc-passthrough* hide-jak?) #f)` | keep Jak and Daxter visible in BODY mode |
 
 GOAL code hot-reloads: edit `mc-passthrough.gc`, then `(ml "goal_src/jak1/pc/features/mc-passthrough.gc")`
 in the REPL — no restart needed.
 
-## Known limitations of milestone 1
+## Known limitations
 
 - Minecraft's world isn't drawn inside Jak yet — you see Jak's world from Minecraft's eyes, and
   Minecraft's own window separately. Compositing the Minecraft frame (blocks, hand, mobs) into
   Jak's renderer is milestone 3.
-- No collision between the two worlds: fly through walls freely. Milestone 2 ("Jak drives the
-  body") fixes this by making Jak's physics the source of truth and teleporting the Minecraft player
-  to match, using the JAK_STATE packets that are already wired up.
-- Jak's level streaming uses both the camera and Jak's own position, so flying far away from
-  where Jak is standing can show unloaded or half-loaded areas. Milestone 2 removes this too.
+- BODY mode uses Jak's movement, so it feels like Jak (momentum, double jump, long jump), not
+  Minecraft's walking. Jak has no sprint, so Ctrl does nothing yet.
+- In FREE mode there is no collision: you fly through walls. Use BODY mode for real gameplay.
+- Minecraft blocks you break/place aren't connected to Jak's world yet (milestone 4).
 - FOV matching is exact in OpenGOAL's default (non-"PS2 culling") mode; Minecraft's dynamic FOV
   is ignored.
