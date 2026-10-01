@@ -19,6 +19,7 @@
 #include "game/graphics/display.h"
 #include "game/graphics/gfx.h"
 #include "game/graphics/sceGraphicsInterface.h"
+#include "game/mods/mc_passthrough.h"
 #include "game/kernel/common/fileio.h"
 #include "game/kernel/common/kboot.h"
 #include "game/kernel/common/kdgo.h"
@@ -384,6 +385,7 @@ int ShutdownMachine() {
   CloseListener();
   ShutdownSound();
   ShutdownGoalProto();
+  mc_passthrough::stop();
 
   Msg(6, "kernel: machine shutdown\n");
   return 0;
@@ -556,6 +558,11 @@ void InitMachine_PCPort() {
   make_function_symbol_from_c("__pc-set-levels", (void*)pc_set_levels);
 
   make_function_symbol_from_c("pc-discord-rpc-update", (void*)update_discord_rpc);
+
+  // Minecraft passthrough mod: UDP bridge to the companion Fabric mod.
+  make_function_symbol_from_c("pc-mc-get-camera", (void*)mc_passthrough::goal_get_camera);
+  make_function_symbol_from_c("pc-mc-send-state", (void*)mc_passthrough::goal_send_state);
+  mc_passthrough::start();
 
   // setup string constants
   // TODO - these may be able to be moved into `init_common_pc_port_functions` but it's trickier

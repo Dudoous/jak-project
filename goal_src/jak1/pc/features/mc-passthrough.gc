@@ -1,0 +1,188 @@
+;;-*-Lisp-*-
+(in-package goal)
+(bundles "ENGINE.CGO" "GAME.CGO")
+(require "engine/gfx/math-camera.gc")
+(require "engine/geometry/geometry.gc")
+(require "engine/camera/cam-interface-h.gc")
+
+;; Minecraft passthrough mod - camera bridge.
+;;
+;; The companion Fabric mod sends the Minecraft player's eye position, yaw, pitch and FOV every
+;; frame over localhost UDP. The C++ runtime (game/mods/mc_passthrough.cpp) keeps the newest packet
+;; and this file turns it into a Jak camera inside update-camera (cam-update.gc).
+;;
+;; Coordinate notes:
+;;  - Minecraft: 1 block = 1 meter, +Y up, yaw 0 faces +Z, yaw 90 faces -X, pitch +90 looks down.
+;;    Minecraft's world is right-handed.
+;;  - Jak: 1 meter = 4096 units, +Y up. A camera looking down +Z has +X on its right
+;;    (see forward-down->inv-matrix), i.e. the opposite handedness to Minecraft. We mirror X so that
+;;    strafing right in Minecraft moves you to the right in Jak.
+;;  - When Minecraft connects (or on mc-reanchor), the current Minecraft pose is locked to Jak's
+;;    current camera pose: you start exactly where Jak's camera was, facing the same way, and from
+;;    then on Minecraft movement is applied relative to that anchor.
+;;
+;; REPL helpers: (mc-on) (mc-off) (mc-reanchor) (mc-status) (mc-debug #t/#f)
+
+(define-extern pc-mc-get-camera (function (pointer float) int))
+(define-extern pc-mc-send-state (function (pointer float) int))
+
+(defconstant MC_RAW_X 0)
+(defconstant MC_RAW_Y 1)
+(defconstant MC_RAW_Z 2)
+(defconstant MC_RAW_YAW 3)
+(defconstant MC_RAW_PITCH 4)
+(defconstant MC_RAW_VFOV 5)
+(defconstant MC_RAW_AGE_MS 6)
+(defconstant MC_RAW_SEQ 7)
+(defconstant MC_RAW_FLAGS 8)
+(defconstant MC_RAW_FORWARD 9)
+(defconstant MC_RAW_STRAFE 10)
+(defconstant MC_RAW_BUTTONS 11)
+
+(deftype mc-passthrough-state (structure)
+  ((enabled?     symbol)    ;; master switch
+   (active?      symbol)    ;; currently driving the camera
+   (mirror-x?    symbol)    ;; handedness fix, see notes above
+   (match-fov?   symbol)    ;; copy Minecraft's FOV (needed for compositing later)
+   (debug?       symbol)    ;; print status to the screen
+   (timeout-ms   float)     ;; packets older than this hand the camera back to Jak
+   (scale        float)     ;; jak units per Minecraft block
+   (yaw-offset   float)     ;; rotation units, set when anchoring
+   (activations  int32)
+   (raw          float 12)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
+   (anchor-mc    vector :inline)
+   (anchor-jak   vector :inline)
+   (pos          vector :inline)
+   (fwd          vector :inline)))
+
+(define *mc-passthrough*
+  (new 'static
+       'mc-passthrough-state
+       :enabled? #t
+       :active? #f
+       :mirror-x? #t
+       :match-fov? #t
+       :debug? #f
+       :timeout-ms 250.0
+       :scale (meters 1.0)))
+
+(defun mc-yaw->jak-heading ((st mc-passthrough-state) (yaw-deg float))
+  "Convert a Minecraft yaw (degrees) to a Jak heading (rotation units, as (atan x z))."
+  (if (-> st mirror-x?) (degrees yaw-deg) (- (degrees yaw-deg))))
+
+(defun mc-passthrough-anchor! ((st mc-passthrough-state))
+  "Lock the current Minecraft pose to Jak's current camera pose."
+  (set-vector! (-> st anchor-mc) (-> st raw MC_RAW_X) (-> st raw MC_RAW_Y) (-> st raw MC_RAW_Z) 1.0)
+  ;; prefer the real game camera (it keeps updating behind our override), fall back to last frame.
+  (let ((jak-trans (if *camera-combiner* (-> *camera-combiner* trans) (-> *math-camera* trans)))
+        (jak-fwd (if *camera-combiner*
+                   (-> *camera-combiner* inv-camera-rot vector 2)
+                   (-> *math-camera* inv-camera-rot vector 2))))
+    (set! (-> st anchor-jak quad) (-> jak-trans quad))
+    (set! (-> st yaw-offset)
+          (- (atan (-> jak-fwd x) (-> jak-fwd z)) (mc-yaw->jak-heading st (-> st raw MC_RAW_YAW)))))
+  (+! (-> st activations) 1)
+  (format 0 "[mc-passthrough] anchored: mc ~,,2f ~,,2f ~,,2f -> jak ~,,2M ~,,2M ~,,2M~%"
+          (-> st anchor-mc x) (-> st anchor-mc y) (-> st anchor-mc z)
+          (-> st anchor-jak x) (-> st anchor-jak y) (-> st anchor-jak z))
+  (none))
+
+(defun mc-passthrough-poll ()
+  "Fetch the newest Minecraft packet. Returns #t if Minecraft should drive the camera this frame."
+  (let ((st *mc-passthrough*))
+    (cond
+      ((not (-> st enabled?)) (set! (-> st active?) #f))
+      ((and (nonzero? (pc-mc-get-camera (&-> st raw 0))) (< (-> st raw MC_RAW_AGE_MS) (-> st timeout-ms)))
+       (if (not (-> st active?)) (mc-passthrough-anchor! st))
+       (set! (-> st active?) #t))
+      (else
+       (if (-> st active?) (format 0 "[mc-passthrough] lost Minecraft, camera returned to Jak~%"))
+       (set! (-> st active?) #f)))
+    (-> st active?)))
+
+(defun mc-passthrough-compute-pose! ((st mc-passthrough-state))
+  "Compute (-> st pos) and (-> st fwd) in Jak space from the raw Minecraft pose."
+  (let* ((heading (+ (mc-yaw->jak-heading st (-> st raw MC_RAW_YAW)) (-> st yaw-offset)))
+         ;; clamp so forward is never parallel to down (forward-down->inv-matrix would divide by 0)
+         (pitch (degrees (fmax -89.5 (fmin 89.5 (-> st raw MC_RAW_PITCH)))))
+         (cp (cos pitch))
+         (sp (sin pitch))
+         (dx (- (-> st raw MC_RAW_X) (-> st anchor-mc x)))
+         (dy (- (-> st raw MC_RAW_Y) (-> st anchor-mc y)))
+         (dz (- (-> st raw MC_RAW_Z) (-> st anchor-mc z)))
+         (co (cos (-> st yaw-offset)))
+         (so (sin (-> st yaw-offset)))
+         (s (-> st scale)))
+    (if (-> st mirror-x?) (set! dx (- dx)))
+    ;; rotate the Minecraft displacement about +Y by yaw-offset, scale to Jak units, add to anchor.
+    (set! (-> st pos x) (+ (-> st anchor-jak x) (* s (+ (* dx co) (* dz so)))))
+    (set! (-> st pos y) (+ (-> st anchor-jak y) (* s dy)))
+    (set! (-> st pos z) (+ (-> st anchor-jak z) (* s (- (* dz co) (* dx so)))))
+    (set! (-> st pos w) 1.0)
+    ;; Minecraft pitch is positive looking down, Jak +Y is up.
+    (set-vector! (-> st fwd) (* (sin heading) cp) (- sp) (* (cos heading) cp) 0.0))
+  (none))
+
+(defun mc-passthrough-apply! ((mcam math-camera))
+  "Overwrite the math camera with the Minecraft pose. Called from update-camera."
+  (let ((st *mc-passthrough*))
+    (mc-passthrough-compute-pose! st)
+    (set! (-> mcam trans quad) (-> st pos quad))
+    (forward-down->inv-matrix (-> mcam inv-camera-rot) (-> st fwd) (new 'static 'vector :y -1.0))
+    ;; Jak's fov is horizontal and its y-ratio depends on aspect/vis settings. Instead of
+    ;; special-casing those, measure k = y-ratio / tan(fov/2) from the current camera and solve for
+    ;; the fov that gives Minecraft's vertical fov.
+    (when (and (-> st match-fov?) (< 1.0 (-> st raw MC_RAW_VFOV)) (< 0.0 (-> mcam fov)))
+      (let ((k (/ (-> mcam y-ratio) (tan (* 0.5 (-> mcam fov))))))
+        (when (< 0.0 k)
+          (set! (-> mcam fov) (* 2.0 (atan (/ (tan (* 0.5 (degrees (-> st raw MC_RAW_VFOV)))) k) 1.0)))
+          ;; recompute ratios now so the new fov applies this frame instead of next frame.
+          (update-math-camera mcam (-> *setting-control* current video-mode) (-> *setting-control* current aspect-ratio)))))
+    ;; never blend toward a stale Jak orientation while Minecraft is driving.
+    (set! (-> mcam smooth-t) 0.0)
+    (when (-> st debug?)
+      ;; GOAL calls are limited to 8 arguments, so this is split up.
+      (format *stdcon* "mc seq ~D age ~,,1fms fov ~,,1f~%" (the int (-> st raw MC_RAW_SEQ)) (-> st raw MC_RAW_AGE_MS) (-> st raw MC_RAW_VFOV))
+      (format *stdcon*
+              "mc ~,,2f ~,,2f ~,,2f yaw ~,,1f pitch ~,,1f~%"
+              (-> st raw MC_RAW_X) (-> st raw MC_RAW_Y) (-> st raw MC_RAW_Z)
+              (-> st raw MC_RAW_YAW) (-> st raw MC_RAW_PITCH))
+      (format *stdcon* "jak ~,,2M ~,,2M ~,,2M~%" (-> st pos x) (-> st pos y) (-> st pos z))))
+  (none))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; REPL helpers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun mc-on ()
+  "Let Minecraft drive the camera whenever it is connected."
+  (set! (-> *mc-passthrough* enabled?) #t)
+  (none))
+
+(defun mc-off ()
+  "Give the camera back to Jak, ignoring Minecraft."
+  (set! (-> *mc-passthrough* enabled?) #f)
+  (set! (-> *mc-passthrough* active?) #f)
+  (none))
+
+(defun mc-reanchor ()
+  "Snap the view back to Jak's camera and re-lock the Minecraft origin there."
+  (set! (-> *mc-passthrough* active?) #f)
+  (none))
+
+(defun mc-debug ((on symbol))
+  "Toggle the on-screen status text."
+  (set! (-> *mc-passthrough* debug?) on)
+  (none))
+
+(defun mc-status ()
+  "Print the bridge status to the REPL."
+  (let ((st *mc-passthrough*))
+    (pc-mc-get-camera (&-> st raw 0))
+    (format #t "enabled ~A active ~A activations ~D~%" (-> st enabled?) (-> st active?) (-> st activations))
+    (format #t "last packet: seq ~D age ~,,1fms vfov ~,,1f~%" (the int (-> st raw MC_RAW_SEQ)) (-> st raw MC_RAW_AGE_MS) (-> st raw MC_RAW_VFOV))
+    (format #t
+            "mc pos ~,,2f ~,,2f ~,,2f yaw ~,,1f pitch ~,,1f~%"
+            (-> st raw MC_RAW_X) (-> st raw MC_RAW_Y) (-> st raw MC_RAW_Z)
+            (-> st raw MC_RAW_YAW) (-> st raw MC_RAW_PITCH)))
+  (none))

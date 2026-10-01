@@ -233,6 +233,7 @@
   "cam-states.o"
   "cam-states-dbg.o"
   "cam-combiner.o"
+  "mc-passthrough.o" ;; added
   "cam-update.o"
   "vol-h.o"
   "cam-layout.o"

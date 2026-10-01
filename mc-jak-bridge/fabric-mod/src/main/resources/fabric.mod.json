@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "jakbridge",
+  "version": "${version}",
+  "name": "Jak Bridge",
+  "description": "Streams the Minecraft camera to a modded OpenGOAL Jak and Daxter for passthrough play.",
+  "authors": ["Nuno"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.ignition.jakbridge.JakBridgeClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

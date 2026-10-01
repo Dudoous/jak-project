@@ -1,0 +1,82 @@
+name: JakCraft Windows Build
+
+# Builds a ready-to-run Windows package of OpenGOAL + the Minecraft passthrough mod, plus the
+# Minecraft (Fabric) mod jar. Download the "JakCraft-windows" artifact from the run's summary page.
+# Contains no game assets: play.bat builds those from your own disc image on first run.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mc-passthrough
+
+jobs:
+  build_windows:
+    name: "OpenGOAL (Windows)"
+    uses: ./.github/workflows/windows-build-clang.yaml
+    with:
+      cmakePreset: "Release-windows-clang-static"
+      cachePrefix: "jakcraft"
+      uploadArtifacts: true
+    secrets: inherit
+
+  build_fabric_mod:
+    name: "Minecraft mod (Fabric)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: mc-jak-bridge
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Build jar
+        working-directory: mc-jak-bridge/fabric-mod
+        run: gradle build --no-daemon
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: jakbridge-fabric-mod
+          if-no-files-found: error
+          path: |
+            mc-jak-bridge/fabric-mod/build/libs/*.jar
+            !mc-jak-bridge/fabric-mod/build/libs/*-sources.jar
+
+  package:
+    name: "Package JakCraft"
+    needs:
+      - build_windows
+      - build_fabric_mod
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: ./ci-artifacts/
+
+      - name: Assemble package
+        run: |
+          set -e
+          ls -Rl ./ci-artifacts/ | head -50
+          OUT=./ci-artifacts/JakCraft
+          ./.github/scripts/releases/extract_build_windows.sh "$OUT" ./ci-artifacts/opengoal-windows-jakcraft ./
+          cp mc-jak-bridge/windows/play.bat "$OUT/"
+          cp mc-jak-bridge/README.md mc-jak-bridge/PROTOCOL.md "$OUT/"
+          mkdir -p "$OUT/tools" "$OUT/minecraft-mod"
+          cp mc-jak-bridge/tools/fake_minecraft.py "$OUT/tools/"
+          cp ./ci-artifacts/jakbridge-fabric-mod/*.jar "$OUT/minecraft-mod/"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: JakCraft-windows
+          if-no-files-found: error
+          path: ./ci-artifacts/JakCraft/

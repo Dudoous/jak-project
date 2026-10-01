@@ -121,6 +121,7 @@ set(RUNTIME_SOURCE
         kernel/jak1/klink.cpp
         kernel/jak1/klisten.cpp
         kernel/jak1/kmachine.cpp
+        mods/mc_passthrough.cpp
         kernel/jak1/kprint.cpp
         kernel/jak1/kscheme.cpp
         kernel/jak1/ksound.cpp
