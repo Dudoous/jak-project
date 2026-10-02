@@ -463,6 +463,15 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
     }
 
+    /** Where Steve's feet are drawn this frame (between two ticks, like the camera). */
+    private static Vec3d steveFeet(MinecraftClient client) {
+        try {
+            return client.player.getLerpedPos(client.getRenderTickCounter().getTickDelta(true));
+        } catch (Throwable t) {
+            return client.player.getPos();
+        }
+    }
+
     /** Steve is down a hole he dug into Jak's ground (Jak then stays up on the surface). */
     private static boolean inDugHole(ClientPlayerEntity p) {
         if (JakDigs.isEmpty()) return false;
@@ -515,7 +524,10 @@ public final class JakBridgeClient implements ClientModInitializer {
         try {
             // Steve's eye height (he's scaled up in Jak's world; lower while sneaking)
             float eye = (float) (client.player.getEyeY() - client.player.getY());
-            int seq = bridge.sendCamera(x, y, z, yaw, pitchDeg, vfov, eye, 0f, buttons, flags);
+            // Steve's feet: in third person the camera isn't above them (Jak must be under Steve)
+            Vec3d feet = steveFeet(client);
+            int seq = bridge.sendCamera(x, y, z, yaw, pitchDeg, vfov, eye, 0f, buttons, flags,
+                    (float) feet.x, (float) (feet.y - collision.yOffset()), (float) feet.z);
             int slot = seq & (sentSeq.length - 1);
             sentSeq[slot] = seq;
             sentNanos[slot] = System.nanoTime();

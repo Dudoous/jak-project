@@ -26,7 +26,7 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int EVENT_EXPLOSION = 1;
     public static final int EVENT_PACKET_SIZE = 36;
     public static final int DEFAULT_PORT = 47800;
-    public static final int CAMERA_PACKET_SIZE = 64;
+    public static final int CAMERA_PACKET_SIZE = 80;
     public static final int JAK_STATE_PACKET_SIZE = 44;
     /** Most blocks one BLOCKS packet carries (must match kMaxBlocks in mc_passthrough.h). */
     public static final int MAX_BLOCKS = 2048;
@@ -105,6 +105,13 @@ public final class BridgeSocket implements AutoCloseable {
     public synchronized int sendCamera(double x, double y, double z, float yaw, float pitch,
                                         float vfov, float forward, float strafe, int buttons,
                                         int flags) throws IOException {
+        return sendCamera(x, y, z, yaw, pitch, vfov, forward, strafe, buttons, flags, Float.NaN, 0f, 0f);
+    }
+
+    /** Same, plus where Steve's feet are (Jak meters); NaN feetX = not sent. */
+    public synchronized int sendCamera(double x, double y, double z, float yaw, float pitch,
+                                        float vfov, float forward, float strafe, int buttons,
+                                        int flags, float feetX, float feetY, float feetZ) throws IOException {
         sendView.clear();
         sendView.putInt(MAGIC);
         sendView.putShort(VERSION);
@@ -121,6 +128,11 @@ public final class BridgeSocket implements AutoCloseable {
         sendView.putFloat(forward);
         sendView.putFloat(strafe);
         sendView.putInt(buttons);
+        boolean feet = !Float.isNaN(feetX);
+        sendView.putFloat(feet ? feetX : 0f);
+        sendView.putFloat(feet ? feetY : 0f);
+        sendView.putFloat(feet ? feetZ : 0f);
+        sendView.putInt(feet ? 1 : 0);
         socket.send(new DatagramPacket(sendBuf, CAMERA_PACKET_SIZE, host, port));
         return mySeq;
     }

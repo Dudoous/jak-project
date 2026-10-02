@@ -2106,7 +2106,7 @@
 (goal-src "pc/features/autosplit-h.gc")
 (goal-src "pc/features/autosplit.gc" "autosplit-h" "task-control-h" "progress-static")
 (goal-src "pc/features/speedruns.gc" "speedruns-h" "autosplit-h")
-(goal-src "pc/features/mc-passthrough.gc" "cam-update" "target-handler" "water" "nav-enemy" "crates" "baseplat" "basebutton" "pad")
+(goal-src "pc/features/mc-passthrough.gc" "cam-interface" "cam-update" "target-handler" "water" "nav-enemy" "crates" "baseplat" "basebutton" "pad")
 (goal-src "pc/pc-cheats.gc" "dma-buffer")
 (goal-src "pc/pckernel-h.gc" "dma-buffer")
 (goal-src "pc/pckernel-impl.gc" "pckernel-h" "pc-cheats")

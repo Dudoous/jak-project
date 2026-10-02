@@ -39,7 +39,7 @@ constexpr u32 kFlagScreenOpen = 2;
 constexpr u32 kFlagSteveMode = 8;  // Minecraft is the game; Jak only renders its world for it
 
 // Number of floats written by goal_get_camera.
-constexpr int kCameraFloats = 12;
+constexpr int kCameraFloats = 16;
 
 /// Start the listener thread (idempotent). Port can be overridden with OPENGOAL_MC_PORT.
 void start();
@@ -56,9 +56,12 @@ void stop();
  *   [6]     age-ms            milliseconds since the packet was received
  *   [7]     seq               packet sequence number (as float)
  *   [8]     flags             packet flags (as float)
- *   [9]     forward input     -1..1 (W/S)
- *   [10]    strafe input      -1..1 (A/D, + = right)
- *   [11]    buttons           bitfield (as float): 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use
+ *   [9]     eye height        Steve's eye height above his feet (m)
+ *   [10]    unused
+ *   [11]    buttons           bitfield (as float): 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use,
+ *                             32.. Jak's buttons (see PROTOCOL.md)
+ *   [12..14] feet             Steve's feet (Jak meters); not under the camera in third person
+ *   [15]    feet valid        1 if [12..14] were sent
  * Returns 1 if a packet has ever been received, 0 otherwise.
  */
 u64 goal_get_camera(u32 dst);

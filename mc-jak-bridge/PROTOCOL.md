@@ -20,7 +20,7 @@ ignored.
 | 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `5` = BLOCKS, `6` = ACTORS (`4` unused) |
 | 8      | u32  | seq     | incrementing per sender |
 
-## CAMERA (type 1, Minecraft → Jak, 64 bytes, sent every rendered frame)
+## CAMERA (type 1, Minecraft → Jak, 80 bytes, sent every rendered frame; 64-byte packets without the feet are still accepted)
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
@@ -34,9 +34,11 @@ ignored.
 | 52     | f32  | eye     | Steve's eye height above his feet (m) — he is scaled up in Jak's world |
 | 56     | f32  | strafe  | unused, 0 |
 | 60     | u32  | buttons | 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use; Jak's buttons: 32 ○, 64 ✕, 128 △, 256 left, 512 right, 1024 up, 2048 down |
+| 64     | f32[3] | feet  | where Steve's feet are (Jak meters) — not under the camera in third person view |
+| 76     | u32  | body flags | 1 = feet valid |
 
 The runtime considers Minecraft "connected" while the newest CAMERA packet is younger than
-`(-> *mc-passthrough* timeout-ms)` (default 250 ms). While connected, Jak is hidden and frozen and
+`(-> *mc-passthrough* timeout-ms)` (default 1500 ms). While connected, Jak is hidden and frozen and
 the camera is at Steve's eyes; after that Jak comes back.
 
 ## JAK_STATE (type 2, Jak → Minecraft, 44 bytes)

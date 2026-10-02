@@ -18,6 +18,8 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
   - when the game moves Jak somewhere by itself (warp gate, launcher, checkpoint, cutscene),
     you watch Jak's own camera full screen until he lands, then Steve is teleported after him —
     warp gates work with the bridge on;
+  - Jak's world loads around **Steve**: the next areas, enemies and pickups load where Steve
+    looks and walks (also in third person view);
   - **cutscenes** play full screen with Jak's own camera (and Jak in them).
 - **Jak's ground is solid for Steve**: Jak's level shape becomes invisible barrier blocks, so you
   walk on Jak's floors, bump into Jak's walls, and swim in Jak's water. **Crates** (scout fly
@@ -65,7 +67,7 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
    Jak's level shape). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.10.0.jar` (from the
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.11.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
 3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
    **Fancy** (not Fabulous), **Max Framerate 120 or more** (or Unlimited) so Minecraft picks up

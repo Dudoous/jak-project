@@ -27,9 +27,15 @@
 
 ;; definition for function camera-pos
 ;; INFO: Return type mismatch object vs vector.
+;; og:preserve-this Minecraft passthrough mod: while Minecraft drives the view, the camera really
+;; is at Steve's eyes, so that's where level loading (load boundaries) must see it.
+;; Set by pc/features/mc-passthrough.gc, #f otherwise.
+(define *mc-passthrough-camera-pos* (the-as vector #f))
+
 (defun camera-pos ()
   (the-as vector
           (cond
+            (*mc-passthrough-camera-pos* *mc-passthrough-camera-pos*)
             (*camera-combiner* (-> *camera-combiner* stack))
             (*math-camera* (-> *math-camera* trans))
             (else *camera-dummy-vector*))))

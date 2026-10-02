@@ -4,6 +4,7 @@
 (require "engine/gfx/math-camera.gc")
 (require "engine/geometry/geometry.gc")
 (require "engine/camera/cam-interface-h.gc")
+(require "engine/camera/cam-interface.gc")
 (require "engine/target/target-h.gc")
 (require "engine/target/target-handler.gc")
 (require "engine/ps2/pad.gc")
@@ -57,6 +58,10 @@
 (defconstant MC_RAW_SEQ 7)
 (defconstant MC_RAW_FLAGS 8)
 (defconstant MC_RAW_EYE_HEIGHT 9) ;; Steve's eye height above his feet (m), he can be scaled up
+(defconstant MC_RAW_FEET_X 12)    ;; Steve's feet (Jak meters): not under the camera in third person
+(defconstant MC_RAW_FEET_Y 13)
+(defconstant MC_RAW_FEET_Z 14)
+(defconstant MC_RAW_HAS_FEET 15)
 (defconstant MC_RAW_BUTTONS 11)
 
 ;; CAMERA packet flags (see PROTOCOL.md)
@@ -107,11 +112,13 @@
    (saved-aspect-x int32)
    (saved-aspect-y int32)
    (event        float 5)
-   (raw          float 12)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
+   (raw          float 16)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
    (out          float 8)   ;; JAK_STATE payload
    (spawn        vector :inline) ;; where Minecraft must put Steve (jak units, feet)
    (last-park    vector :inline) ;; where we left Jak last frame
-   (pos          vector :inline)
+   (pos          vector :inline) ;; the camera (Minecraft's, also in third person)
+   (feet         vector :inline) ;; Steve's feet
+   (eye          vector :inline) ;; Steve's eyes
    (fwd          vector :inline)
    (jak          process)   ;; the Jak we took over (a warp gate or a new game makes a new one)
    (in-movie?    symbol)))
@@ -197,6 +204,7 @@
   (when (-> st mode)
     (mc-set-jak-hidden! #f)
     (mc-restore-aspect! st)
+    (set! *mc-passthrough-camera-pos* #f)
     (format 0 "[mc-passthrough] Minecraft disconnected, Jak is back~%"))
   (set! (-> st mode) #f)
   (none))
@@ -257,7 +265,7 @@
 
 (defun mc-steve-melee! ((st mc-passthrough-state))
   "Left click in Minecraft: hit the closest enemy in front of Steve within reach."
-  (set! (-> *mc-search-origin* quad) (-> st pos quad))
+  (set! (-> *mc-search-origin* quad) (-> st eye quad))
   (set! (-> *mc-search-dir* quad) (-> st fwd quad))
   (set! *mc-search-reach* (-> st melee-reach))
   (set! *mc-search-best* #f)
@@ -509,6 +517,29 @@
                  1.0)
     ;; Minecraft pitch is positive looking down, Jak +Y is up.
     (set-vector! (-> st fwd) (* (sin heading) cp) (- sp) (* (cos heading) cp) 0.0))
+  ;; Steve's body: sent separately, since in third person the camera is behind him
+  (cond
+    ((< 0.5 (-> st raw MC_RAW_HAS_FEET))
+     (set-vector! (-> st feet)
+                  (* (-> st scale) (-> st raw MC_RAW_FEET_X))
+                  (* (-> st scale) (-> st raw MC_RAW_FEET_Y))
+                  (* (-> st scale) (-> st raw MC_RAW_FEET_Z))
+                  1.0))
+    (else
+     (set! (-> st feet quad) (-> st pos quad))
+     (-! (-> st feet y) (-> st eye-height))))
+  (set! (-> st eye quad) (-> st feet quad))
+  (+! (-> st eye y) (-> st eye-height))
+  (none))
+
+;; Jak isn't drawn (skip-bones), and the renderer counts down an object's death / warp effect
+;; timer only while it draws it. The game waits for the 'death-end at the end of that timer
+;; (a warp gate loads the next level once Jak has vanished into it), so count it down here.
+(defun mc-jak-effect-timer! ()
+  (let ((dc (-> *target* draw)))
+    (when (and (logtest? (-> dc status) (draw-status skip-bones)) (nonzero? (-> dc death-timer)) (not (paused?)))
+      (set! (-> dc death-timer) (+ (-> dc death-timer) -1))
+      (if (>= 1 (-> dc death-timer)) (send-event *target* 'death-end dc))))
   (none))
 
 ;; Jak states in which the game itself is using Jak (talking to someone, power cell dance, warp
@@ -550,9 +581,8 @@
    around Steve and Jak's world reacts to him. His controller is cut off (mc-passthrough-pad!)."
   (when *target*
     (mc-set-jak-hidden! #t)
-    (let ((feet (new 'stack-no-clear 'vector)))
-      (set! (-> feet quad) (-> st pos quad))
-      (-! (-> feet y) (-> st eye-height))
+    (mc-jak-effect-timer!)
+    (let ((feet (-> st feet)))
       (cond
         ((mc-jak-busy?) #f)
         ;; Steve dug into Jak's ground: Jak can't follow him under his own floor, he waits on top
@@ -561,11 +591,11 @@
          (mc-passthrough-handover! st))
         (else
          ;; after (re)activation Minecraft teleports Steve to the spawn point a moment later: don't
-         ;; drag Jak back to wherever Steve was before that. (If Minecraft can't teleport him, e.g.
-         ;; its collision isn't loaded, carry on after 2 s as long as Steve is nearby.)
-         (let ((d (vector-vector-distance feet (-> st spawn))))
-           (if (or (< d (meters 3.0)) (and (< d (meters 50.0)) (time-elapsed? (-> st handover-time) (seconds 2))))
-             (set! (-> st parked?) #t)))
+         ;; drag Jak back to wherever Steve was before that. After 3 s Jak follows Steve wherever
+         ;; he is (Jak must be with Steve, or the levels around Steve don't load).
+         (if (or (< (vector-vector-distance feet (-> st spawn)) (meters 3.0))
+                 (time-elapsed? (-> st handover-time) (seconds 3)))
+           (set! (-> st parked?) #t))
          (when (-> st parked?)
            (move-to-point! (-> *target* control) feet)
            (set! (-> *target* control transv quad) (the-as uint128 0))
@@ -622,6 +652,8 @@
     (set! (-> mcam smooth-t) 0.0)
     ;; this frame is drawn from the pose Minecraft sent: tag it so Minecraft can match it exactly
     (pc-mc-pose-used)
+    ;; and level loading must see the camera where it really is
+    (set! *mc-passthrough-camera-pos* (-> st pos))
     (mc-passthrough-park-jak! st)
     (mc-passthrough-gameplay! st)
     (mc-passthrough-report! st JAK_STATE_FLAG_STEVE)
@@ -639,9 +671,7 @@
   "#t while the game has taken Jak far from Steve by itself (warp gate, respawn, launcher) and
    until Minecraft has brought Steve there. Jak's own camera follows him meanwhile, so Jak's world
    loads around Jak, not around where Steve was."
-  (let ((feet (new 'stack-no-clear 'vector)))
-    (set! (-> feet quad) (-> st pos quad))
-    (-! (-> feet y) (-> st eye-height))
+  (let ((feet (-> st feet)))
     (if (and (< (meters 12.0) (vector-vector-distance (-> *target* control trans) feet))
              (or (mc-jak-busy?)
                  (and (not (-> st parked?)) (not (time-elapsed? (-> st handover-time) (seconds 3))))))
@@ -652,6 +682,8 @@
   "Hook called from update-camera. Returns #t if Minecraft drove the camera this frame."
   (let ((st *mc-passthrough*)
         (jak-camera (logior JAK_STATE_FLAG_STEVE JAK_STATE_FLAG_CUTSCENE)))
+    ;; Jak's camera unless mc-passthrough-apply! below says otherwise
+    (set! *mc-passthrough-camera-pos* #f)
     (cond
       ((not (mc-passthrough-poll)) #f)
       ((not *target*)

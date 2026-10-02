@@ -67,6 +67,10 @@ struct CameraPacket {
   float yaw, pitch, vfov;
   float forward, strafe;
   u32 buttons;
+  // since bridge 0.11 (80-byte packets): where Steve's feet are, which is not under the camera in
+  // third person view
+  float feet[3];
+  u32 body_flags;  // 1 = feet valid
 };
 
 struct EventPacket {
@@ -87,7 +91,8 @@ struct JakStatePacket {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(CameraPacket) == 64, "CameraPacket layout changed - update PROTOCOL.md");
+static_assert(sizeof(CameraPacket) == 80, "CameraPacket layout changed - update PROTOCOL.md");
+constexpr int kMinCameraPacket = 64;  // older bridges send no feet
 static_assert(sizeof(JakStatePacket) == 44, "JakStatePacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(EventPacket) == 36, "EventPacket layout changed - update PROTOCOL.md");
 
@@ -155,11 +160,11 @@ void listen_loop() {
         continue;
       }
     }
-    if (n < (int)sizeof(CameraPacket)) {
+    if (n < kMinCameraPacket) {
       continue;  // timeout, error, or runt packet
     }
-    CameraPacket pkt;
-    memcpy(&pkt, buf, sizeof(pkt));
+    CameraPacket pkt{};
+    memcpy(&pkt, buf, n < (int)sizeof(pkt) ? (size_t)n : sizeof(pkt));
     if (pkt.magic != kMagic || pkt.version != kVersion || pkt.type != kTypeCamera) {
       continue;
     }
@@ -263,6 +268,10 @@ u64 goal_get_camera(u32 dst) {
   out[9] = g_latest.forward;
   out[10] = g_latest.strafe;
   out[11] = (float)g_latest.buttons;
+  out[12] = g_latest.feet[0];
+  out[13] = g_latest.feet[1];
+  out[14] = g_latest.feet[2];
+  out[15] = (g_latest.body_flags & 1) ? 1.f : 0.f;
   g_last_read.valid = 1;
   g_last_read.seq = g_latest.seq;
   g_last_read.x = out[0];
