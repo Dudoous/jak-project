@@ -32,6 +32,10 @@
 ;; Set by pc/features/mc-passthrough.gc, #f otherwise.
 (define *mc-passthrough-camera-pos* (the-as vector #f))
 
+;; og:preserve-this Minecraft passthrough mod: #t while Jak is paused because Minecraft's game menu is
+;; open (main.gc then doesn't draw the PAUSE text: Minecraft shows its own menu).
+(define *mc-passthrough-paused* #f)
+
 (defun camera-pos ()
   (the-as vector
           (cond

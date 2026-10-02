@@ -21,6 +21,8 @@ public final class BridgeSocket implements AutoCloseable {
     public static final short TYPE_EVENT = 3;
     public static final short TYPE_BLOCKS = 5;
     public static final short TYPE_ACTORS = 6;
+    public static final short TYPE_LIGHT = 7;
+    public static final int LIGHT_FLOATS = 32;
     public static final int ACTOR_BOX = 1;
     public static final int ACTOR_SLAB = 2;
     public static final int EVENT_EXPLOSION = 1;
@@ -39,6 +41,8 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int FLAG_SCREEN_OPEN = 2;
     /** Minecraft is playing: Jak renders his world from Steve's eyes and is hidden/frozen. */
     public static final int FLAG_STEVE_MODE = 8;
+    /** Minecraft's game menu is open (singleplayer is paused): Jak pauses too. */
+    public static final int FLAG_PAUSED = 32;
     /** Steve is down a hole he dug into Jak's ground: Jak stays up on the surface. */
     public static final int FLAG_IN_HOLE = 16;
 
@@ -72,6 +76,12 @@ public final class BridgeSocket implements AutoCloseable {
         public long receivedNanos;
     }
 
+    /** Jak's light, fog and clock where Steve is (see PROTOCOL.md, LIGHT and JakLight). */
+    public static final class Light {
+        public final float[] data = new float[LIGHT_FLOATS];
+        public long receivedNanos;
+    }
+
     /** Latest state the Jak side sent back (see PROTOCOL.md, JAK_STATE). Floats an older Jak side
      *  didn't send are NaN. */
     public static final class JakState {
@@ -89,6 +99,7 @@ public final class BridgeSocket implements AutoCloseable {
     private volatile boolean running = true;
     private volatile JakState latestJakState;
     private volatile Actors latestActors;
+    private volatile Light latestLight;
     private int seq = 0;
 
     public BridgeSocket(int port) throws IOException {
@@ -187,6 +198,10 @@ public final class BridgeSocket implements AutoCloseable {
         return latestActors;
     }
 
+    public Light latestLight() {
+        return latestLight;
+    }
+
     public int sentPackets() {
         return seq;
     }
@@ -206,6 +221,15 @@ public final class BridgeSocket implements AutoCloseable {
                     continue;
                 }
                 short type = in.getShort();
+                if (type == TYPE_LIGHT) {
+                    in.getInt(); // seq
+                    int n = Math.min(LIGHT_FLOATS, (packet.getLength() - 12) / 4);
+                    Light l = new Light();
+                    for (int i = 0; i < n; i++) l.data[i] = in.getFloat();
+                    l.receivedNanos = System.nanoTime();
+                    latestLight = l;
+                    continue;
+                }
                 if (type == TYPE_ACTORS) {
                     in.getInt(); // seq
                     int n = Math.min(64, in.getInt());

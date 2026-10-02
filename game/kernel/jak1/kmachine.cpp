@@ -566,6 +566,7 @@ void InitMachine_PCPort() {
   make_function_symbol_from_c("pc-mc-get-blocks", (void*)mc_passthrough::goal_get_blocks);
   make_function_symbol_from_c("pc-mc-pose-used", (void*)mc_passthrough::goal_pose_used);
   make_function_symbol_from_c("pc-mc-send-actors", (void*)mc_passthrough::goal_send_actors);
+  make_function_symbol_from_c("pc-mc-send-light", (void*)mc_passthrough::goal_send_light);
   mc_passthrough::start();
 
   // setup string constants

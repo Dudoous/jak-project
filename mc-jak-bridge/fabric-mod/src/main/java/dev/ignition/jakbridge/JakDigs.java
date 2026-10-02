@@ -29,6 +29,14 @@ public final class JakDigs {
     private static final Set<Long> cells = ConcurrentHashMap.newKeySet();
     /** Dirt / stone this mod put in Jak's ground (so it can tell them from the player's own blocks). */
     private static final Set<Long> earth = ConcurrentHashMap.newKeySet();
+    /**
+     * Cells dug before 0.13, when Jak's floors were the voxel *below* the surface: the voxel above
+     * such a hole is now the floor block, and is dug out too when it's placed (see CollisionPlacer).
+     */
+    private static final Set<Long> legacy = ConcurrentHashMap.newKeySet();
+    /** Save file marker (old files start with the cell count, never negative). */
+    private static final int FILE_MAGIC = -0x4A44;
+    private static final int FILE_VERSION = 2;
     private static volatile int version = 0;
     private static volatile boolean dirty = false;
 
@@ -67,6 +75,11 @@ public final class JakDigs {
         if (earth.add(key(x, y, z))) dirty = true;
     }
 
+    /** A hole dug before 0.13 (see legacy). */
+    public static boolean isLegacy(int x, int y, int z) {
+        return !legacy.isEmpty() && legacy.contains(key(x, y, z));
+    }
+
     public static boolean isEarth(int x, int y, int z) {
         return !earth.isEmpty() && earth.contains(key(x, y, z));
     }
@@ -97,6 +110,7 @@ public final class JakDigs {
     public static void clear() {
         cells.clear();
         earth.clear();
+        legacy.clear();
         version++;
         dirty = false;
     }
@@ -106,14 +120,28 @@ public final class JakDigs {
         if (file == null || !Files.exists(file)) return;
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(file)))) {
             int n = in.readInt();
-            for (int i = 0; i < n; i++) cells.add(in.readLong());
+            boolean old = n != FILE_MAGIC;
+            if (!old) {
+                in.readInt(); // version
+                n = in.readInt();
+            }
+            for (int i = 0; i < n; i++) {
+                long k = in.readLong();
+                cells.add(k);
+                if (old) legacy.add(k);
+            }
             int m = in.readInt();
             for (int i = 0; i < m; i++) earth.add(in.readLong());
+            if (!old) {
+                int l = in.readInt();
+                for (int i = 0; i < l; i++) legacy.add(in.readLong());
+            }
             version++;
+            dirty = old; // rewrite in the new format
         } catch (IOException e) {
             JakBridgeClient.LOG.warn("Could not read {}: {}", file, e.toString());
+            dirty = false;
         }
-        dirty = false;
     }
 
     /** Write the cells if they changed since the last save. */
@@ -123,12 +151,17 @@ public final class JakDigs {
         try {
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(tmp)))) {
+                out.writeInt(FILE_MAGIC);
+                out.writeInt(FILE_VERSION);
                 List<Long> copy = new ArrayList<>(cells);
                 out.writeInt(copy.size());
                 for (long k : copy) out.writeLong(k);
                 List<Long> e = new ArrayList<>(earth);
                 out.writeInt(e.size());
                 for (long k : e) out.writeLong(k);
+                List<Long> l = new ArrayList<>(legacy);
+                out.writeInt(l.size());
+                for (long k : l) out.writeLong(k);
             }
             Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {

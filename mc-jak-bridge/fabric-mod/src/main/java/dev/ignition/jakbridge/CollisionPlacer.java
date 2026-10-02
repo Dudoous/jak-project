@@ -35,10 +35,11 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Runs on the integrated (singleplayer) server: places Jak's collision as invisible barrier blocks
- * around the player, teleports Steve to where Jak was when Minecraft takes over, lets Steve step
- * up 1-block ledges (Jak's slopes become 1-block stairs), and once a second tells Jak which blocks
- * the player built nearby (Jak's enemies walk around them; lava, fire, cactus... kill them).
+ * Runs on the integrated (singleplayer) server: places Jak's collision as invisible blocks around
+ * the player (JakGroundBlock: their tops are cut to Jak's real floor height and they sound like
+ * Jak's ground), teleports Steve to where Jak was when Minecraft takes over, makes Steve Jak-sized,
+ * keeps Minecraft's clock on Jak's, and once a second tells Jak which blocks the player built nearby
+ * (Jak's enemies walk around them; lava, fire, cactus... kill them).
  */
 public final class CollisionPlacer {
     /** Blocks placed per server tick at most, so the game never hitches. */
@@ -84,6 +85,7 @@ public final class CollisionPlacer {
     private volatile String worldWarning = null;
     private boolean checkedWorldHeight = false;
     private int ticksUntilBlockScan = 0;
+    private int ticksUntilClockSync = 0;
     private volatile int lastBlocksSent = 0;
     private int[] blockBuf = new int[4 * 256];
     private long[] blockDist = new long[256];
@@ -271,9 +273,10 @@ public final class CollisionPlacer {
             hurtSteve(world, player, damage);
         }
 
-        BlockState state = config.visibleCollision()
-                ? Blocks.LIGHT_GRAY_STAINED_GLASS.getDefaultState()
-                : Blocks.BARRIER.getDefaultState();
+        if (--ticksUntilClockSync <= 0) {
+            ticksUntilClockSync = 20;
+            syncClock(world);
+        }
 
         double[] spawn = pendingSpawn;
         if (spawn != null) {
@@ -283,7 +286,7 @@ public final class CollisionPlacer {
             // make sure there is ground before Steve lands there
             for (int dx = -2; dx <= 2; dx++) {
                 for (int dz = -2; dz <= 2; dz++) {
-                    placeColumn(world, v, scx + dx, scz + dz, state, Integer.MAX_VALUE);
+                    placeColumn(world, v, scx + dx, scz + dz, Integer.MAX_VALUE);
                 }
             }
             BlockPos spawnPos = BlockPos.ofFloored(spawn[0], spawn[1] + yOffset + 0.6, spawn[2]);
@@ -303,14 +306,31 @@ public final class CollisionPlacer {
             for (int dx = -r; dx <= r && budget > 0; dx++) {
                 for (int dz = -r; dz <= r && budget > 0; dz++) {
                     if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
-                    budget -= placeColumn(world, v, pcx + dx, pcz + dz, state, budget);
+                    budget -= placeColumn(world, v, pcx + dx, pcz + dz, budget);
                 }
             }
         }
     }
 
-    /** Place one chunk column's voxels. Returns the number of blocks examined (0 if done before). */
-    private int placeColumn(ServerWorld world, CollisionVoxels v, int cx, int cz, BlockState state, int budget) {
+    /** Jak's ground block, or null if it couldn't be registered (then barriers, 1 m steps). */
+    private static JakGroundBlock ground() {
+        return JakBridgeMod.jakGround;
+    }
+
+    /** A full block of Jak's level (or of one of Jak's objects) that sounds like soundKind. */
+    private BlockState fullBlock(int soundKind) {
+        if (config.visibleCollision()) return Blocks.LIGHT_GRAY_STAINED_GLASS.getDefaultState();
+        JakGroundBlock g = ground();
+        return g == null ? Blocks.BARRIER.getDefaultState() : g.state(16, soundKind);
+    }
+
+    /**
+     * Place one chunk column's voxels. Returns the number of blocks examined (0 if done before).
+     * A voxel with Jak's floor in it (and nothing above) becomes a block whose top is the floor;
+     * the rest are full blocks. Blocks left by older versions of the mod (barriers whose floors were
+     * one block lower) are replaced or removed.
+     */
+    private int placeColumn(ServerWorld world, CollisionVoxels v, int cx, int cz, int budget) {
         long key = CollisionVoxels.columnKey(cx, cz);
         synchronized (doneColumns) {
             if (doneColumns.contains(key)) return 0;
@@ -320,32 +340,104 @@ public final class CollisionPlacer {
             synchronized (doneColumns) {
                 doneColumns.add(key);
             }
+            removeStaleBlocks(world, v, cx, cz);
             return 1;
         }
         if (col.count() > budget && budget != Integer.MAX_VALUE) {
             // too big for what's left of this tick; it gets a full tick next time
             return budget;
         }
+        CollisionVoxels.Floors floors = v.floors(cx, cz);
+        JakGroundBlock g = config.visibleCollision() ? null : ground();
         BlockPos.Mutable pos = new BlockPos.Mutable();
         int baseX = cx << 4;
         int baseZ = cz << 4;
         int off = yOffset;
         col.forEach((lx, y, lz) -> {
-            if (JakDigs.contains(baseX + lx, y, baseZ + lz)) return; // the player dug this out
-            pos.set(baseX + lx, y + off, baseZ + lz);
+            int x = baseX + lx, z = baseZ + lz;
+            if (JakDigs.contains(x, y, z)) return; // the player dug this out
+            boolean top = !col.has(lx, y + 1, lz);
+            int floor = floors.top(lx, y, lz);
+            if (top && floor != 0 && JakDigs.isLegacy(x, y - 1, z)) {
+                // a hole dug before 0.13 sits one block lower: this floor block is its lid
+                JakDigs.add(x, y, z);
+                return;
+            }
+            BlockState want;
+            if (g == null) {
+                want = fullBlock(JakSurface.STONE);
+            } else {
+                int height = top && floor != 0 ? (floor & 0xff) : 16;
+                want = g.state(height, floor >> 8);
+            }
+            pos.set(x, y + off, z);
             if (world.isOutOfHeightLimit(pos)) return;
-            if (world.getBlockState(pos).isAir()) {
-                world.setBlockState(pos, state, Block.NOTIFY_LISTENERS | Block.FORCE_STATE);
+            BlockState have = world.getBlockState(pos);
+            if (have.isAir() || (isBarrierLike(have) && have != want)) {
+                world.setBlockState(pos, want, Block.NOTIFY_LISTENERS | Block.FORCE_STATE);
             }
         });
         synchronized (doneColumns) {
             doneColumns.add(key);
         }
+        removeStaleBlocks(world, v, cx, cz);
         return col.count();
     }
 
+    /**
+     * Barriers that aren't Jak's level any more (older versions put Jak's floors one block lower)
+     * and aren't one of Jak's objects either: removed, so they don't float as invisible ledges.
+     */
+    private void removeStaleBlocks(ServerWorld world, CollisionVoxels v, int cx, int cz) {
+        WorldChunk chunk = world.getChunkManager().getWorldChunk(cx, cz);
+        if (chunk == null) return;
+        Set<Long> actors = new HashSet<>();
+        for (ActorBlocks ab : actorBlocks.values()) actors.addAll(ab.placed);
+        ChunkSection[] sections = chunk.getSectionArray();
+        BlockPos.Mutable pos = new BlockPos.Mutable();
+        for (int i = 0; i < sections.length; i++) {
+            ChunkSection section = sections[i];
+            if (section == null || section.isEmpty() || !section.hasAny(st -> st.isOf(Blocks.BARRIER))) continue;
+            int sy = chunk.sectionIndexToCoord(i);
+            for (int ly = 0; ly < 16; ly++) {
+                for (int lz = 0; lz < 16; lz++) {
+                    for (int lx = 0; lx < 16; lx++) {
+                        if (!section.getBlockState(lx, ly, lz).isOf(Blocks.BARRIER)) continue;
+                        int x = (cx << 4) + lx, y = (sy << 4) + ly, z = (cz << 4) + lz;
+                        if (v.contains(x, y - yOffset, z) && !JakDigs.contains(x, y - yOffset, z)) continue;
+                        pos.set(x, y, z);
+                        if (actors.contains(pos.asLong())) continue;
+                        world.setBlockState(pos, Blocks.AIR.getDefaultState(), Block.NOTIFY_LISTENERS | Block.FORCE_STATE);
+                    }
+                }
+            }
+        }
+    }
+
     private static boolean isBarrierLike(BlockState s) {
-        return s.isOf(Blocks.BARRIER) || s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS);
+        return s.isOf(Blocks.BARRIER) || s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS)
+                || (ground() != null && s.isOf(ground()));
+    }
+
+    /** Blocks this mod puts in the world for Jak's level and objects (not the player's). */
+    public static boolean isJakBlock(BlockState s) {
+        return isBarrierLike(s);
+    }
+
+    /** Minecraft's clock follows Jak's (sync_clock): night in Jak's world is night in Minecraft. */
+    private void syncClock(ServerWorld world) {
+        if (!config.syncClock()) return;
+        BridgeSocket.Light light = JakLight.fresh();
+        if (light == null) return;
+        float hour = light.data[JakLight.HOUR];
+        if (!(hour >= 0f && hour < 24.01f)) return;
+        // Minecraft time 0 is 6:00, 1000 ticks per hour
+        long jakTicks = (long) (((hour - 6f + 24f) % 24f) * 1000f);
+        long now = world.getTimeOfDay();
+        long day = Math.floorDiv(now, 24000L);
+        long target = day * 24000L + jakTicks;
+        if (Math.abs(target - now) > 12000) target += target < now ? 24000L : -24000L; // never jump a day back
+        if (Math.abs(target - now) > 40) world.setTimeOfDay(target);
     }
 
     /**
@@ -358,9 +450,6 @@ public final class CollisionPlacer {
         boolean stale = a == null || System.nanoTime() - a.receivedNanos > 2_000_000_000L;
         if (a == lastActors && !stale) return; // nothing new
         lastActors = a;
-        BlockState state = config.visibleCollision()
-                ? Blocks.LIGHT_GRAY_STAINED_GLASS.getDefaultState()
-                : Blocks.BARRIER.getDefaultState();
         Set<Integer> keep = new HashSet<>();
         if (!stale) {
             for (int i = 0; i < a.count; i++) {
@@ -378,6 +467,8 @@ public final class CollisionPlacer {
                 ab.y = y;
                 ab.z = z;
                 BlockPos.Mutable pos = new BlockPos.Mutable();
+                // crates sound like wood, doors like metal
+                BlockState state = fullBlock(a.kind[i] == BridgeSocket.ACTOR_BOX ? JakSurface.WOOD : JakSurface.METAL);
                 for (int[] c : JakActors.cells(a.kind[i], a.data, i * 6)) {
                     pos.set(c[0], c[1] + yOffset, c[2]);
                     if (world.isOutOfHeightLimit(pos)) continue;
@@ -448,12 +539,16 @@ public final class CollisionPlacer {
         return depth <= 3 ? Blocks.DIRT.getDefaultState() : Blocks.STONE.getDefaultState();
     }
 
-    /** A pickaxe or shovel hit Jak's ground: it becomes real dirt / stone that can be mined. */
+    /**
+     * A pickaxe or shovel hit Jak's ground: a full block becomes real dirt / stone that can be
+     * mined. The top layer (cut to Jak's floor) is mined as it is (it would stick out as dirt).
+     */
     public void convertJakGround(ServerWorld world, BlockPos pos) {
         CollisionVoxels v = voxels;
         if (v == null || world == null) return;
         int x = pos.getX(), y = pos.getY() - yOffset, z = pos.getZ();
-        if (v.contains(x, y, z) && isBarrierLike(world.getBlockState(pos))) {
+        BlockState s = world.getBlockState(pos);
+        if (v.contains(x, y, z) && isBarrierLike(s) && !JakGroundBlock.isPartial(s)) {
             placeEarth(world, pos, v, x, y, z);
         }
     }
@@ -484,7 +579,8 @@ public final class CollisionPlacer {
             if (world.isOutOfHeightLimit(np)) continue;
             BlockState ns = world.getBlockState(np);
             boolean jakGround = v.contains(nx, ny, nz);
-            if (jakGround && (isBarrierLike(ns) || ns.isAir())) {
+            // the top layer around a hole stays as it is: as dirt it would stick out of Jak's floor
+            if (jakGround && !JakGroundBlock.isPartial(ns) && (isBarrierLike(ns) || ns.isAir())) {
                 placeEarth(world, np.toImmutable(), v, nx, ny, nz);
             } else if (d[1] != 1 && ns.isAir() && underJakGround(v, nx, ny, nz)) {
                 BlockPos above = np.up();
@@ -506,9 +602,9 @@ public final class CollisionPlacer {
         return JakDigs.isEarth(x, y, z);
     }
 
-    /** Anything the player built (Jak's own ground is barrier blocks, the rest of the world is void). */
+    /** Anything the player built (Jak's own ground is this mod's blocks, the rest of the world is void). */
     private static boolean isPlayerBlock(BlockState s) {
-        return !s.isAir() && !s.isOf(Blocks.BARRIER) && !s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS);
+        return !s.isAir() && !isBarrierLike(s);
     }
 
     /**

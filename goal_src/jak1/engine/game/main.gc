@@ -502,7 +502,8 @@
                                                (-> disp frames (-> disp on-screen) frame debug-buf)
                                                (-> disp frames (-> disp on-screen) frame global-buf)))
                                        (bucket-id debug))
-            (if (and (= *master-mode* 'pause) (!= *cheat-mode* 'camera))
+            ;; og:preserve-this Minecraft passthrough: no PAUSE text when Minecraft's menu paused Jak
+            (if (and (= *master-mode* 'pause) (!= *cheat-mode* 'camera) (not *mc-passthrough-paused*))
               (draw-string-xy (lookup-text! *common-text* (text-id pause) #f)
                               s3-1
                               256

@@ -10,6 +10,9 @@
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
+    "main": [
+      "dev.ignition.jakbridge.JakBridgeMod"
+    ],
     "client": [
       "dev.ignition.jakbridge.JakBridgeClient"
     ]

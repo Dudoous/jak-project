@@ -188,11 +188,15 @@ void extract_pats(CollideListItem& item) {
 std::string debug_dump_to_obj(const std::vector<CollideListItem>& list) {
   std::vector<math::Vector4f> verts;
   std::vector<math::Vector<u32, 3>> faces;
+  // JakCraft (Minecraft passthrough mod): each face's pat (surface type: material, wall/ground,
+  // camera-only, deadly...), written as "usemtl pat_xxxxxxxx" before the faces that use it.
+  std::vector<u32> pats;
 
   for (auto& item : list) {
     u32 f_off = verts.size() + 1;
     for (auto& f : item.unpacked.faces) {
       faces.emplace_back(f.verts[0] + f_off, f.verts[1] + f_off, f.verts[2] + f_off);
+      pats.push_back(f.pat);
     }
     for (u32 t = 0; t < item.unpacked.vu0_buffer.size(); t++) {
       verts.push_back(item.unpacked.vu0_buffer[t] / 4096);
@@ -204,7 +208,15 @@ std::string debug_dump_to_obj(const std::vector<CollideListItem>& list) {
     result += fmt::format("v {} {} {}\n", vert.x(), vert.y(), vert.z());
   }
 
-  for (auto& face : faces) {
+  bool have_pat = false;
+  u32 last_pat = 0;
+  for (size_t i = 0; i < faces.size(); i++) {
+    const auto& face = faces[i];
+    if (!have_pat || pats[i] != last_pat) {
+      result += fmt::format("usemtl pat_{:08x}\n", pats[i]);
+      last_pat = pats[i];
+      have_pat = true;
+    }
     result += fmt::format("f {}/{} {}/{} {}/{}\n", face.x(), face.x(), face.y(), face.y(), face.z(),
                           face.z());
   }

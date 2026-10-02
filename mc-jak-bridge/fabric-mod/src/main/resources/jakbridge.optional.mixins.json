@@ -5,7 +5,10 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "CameraMixin",
-    "GameRendererMixin"
+    "GameRendererMixin",
+    "LightmapMixin",
+    "DiffuseLightingMixin",
+    "FogMixin"
   ],
   "injectors": {
     "defaultRequire": 0

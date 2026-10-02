@@ -17,14 +17,14 @@ ignored.
 |-------:|------|---------|-------|
 | 0      | u32  | magic   | `0x4B4A434D` (bytes `M C J K`) |
 | 4      | u16  | version | `1` |
-| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `5` = BLOCKS, `6` = ACTORS (`4` unused) |
+| 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `5` = BLOCKS, `6` = ACTORS, `7` = LIGHT (`4` unused) |
 | 8      | u32  | seq     | incrementing per sender |
 
 ## CAMERA (type 1, Minecraft → Jak, 88 bytes, sent every rendered frame; older 64-byte (no feet) and 80-byte (no look direction) packets are still accepted)
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 3 Minecraft is playing (always set by the mod), bit 4 Steve is down a hole he dug into Jak's ground (Jak waits on the surface), bits 16–31 Minecraft window width/height × 1000 |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 3 Minecraft is playing (always set by the mod), bit 4 Steve is down a hole he dug into Jak's ground (Jak waits on the surface), bit 5 Minecraft's game menu is open (singleplayer paused: Jak pauses too, without his PAUSE text), bits 16–31 Minecraft window width/height × 1000 |
 | 16     | f64  | x       | camera (eye) position in Jak meters (Minecraft Y minus `y_offset`, normally 0) |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
@@ -94,6 +94,41 @@ The solid Jak objects within 48 m of Steve: kind `1` = box (crates, scout fly bo
 slab (a closed door, facing the normal). Minecraft fills them with invisible blocks and removes
 those when an object is no longer listed (crate broken, door open, out of range). Each packet
 replaces the previous list.
+
+## LIGHT (type 7, Jak → Minecraft, 12 + 128 bytes, every other frame)
+
+| Offset | Type | Field | Notes |
+|-------:|------|-------|-------|
+| 12 | f32[32] | data | see below |
+
+The light Jak would be lit with where Steve stands: his light group (`*time-of-day-context*`
+light-group of Jak's `draw light-index`), which Jak's mood system blends between levels and times
+of day (caves and buildings use their own groups), plus Jak's fog and clock.
+
+| data | meaning |
+|------|---------|
+| `[0..2]`, `[3..5]` | sun: direction towards the light (unit, Jak = Minecraft axes), colour × level |
+| `[6..8]`, `[9..11]` | fill light: direction, colour × level |
+| `[12..14]`, `[15..17]` | bounce light (usually from below): direction, colour × level |
+| `[18..20]` | ambient colour × level |
+| `[21..23]` | fog colour (0–1) |
+| `[24]`, `[25]` | fog start, fog end (m) |
+| `[26]` | how much fog there is at fog end (0–1; Jak's fog never gets complete) |
+| `[27]` | Jak's clock, hours 0–24 |
+| `[28]` | light group index |
+| `[29..31]` | unused |
+
+Colours are in Jak's merc lighting units: a surface facing a light gets ambient + colour, and 1.0
+is the texture at full brightness. Minecraft colours its lightmap, entity lights and fog with this
+(`JakLight`, `JakRender`) and sets its time of day from the clock.
+
+## Collision files
+
+The extractor writes Jak's level collision as `collide-<level>.obj` (`rip_collision`). The
+JakCraft extractor also writes each triangle's `pat` (surface type, `pat-surface` in
+`goal_src/jak1/engine/collide/pat-h.gc`) as `usemtl pat_xxxxxxxx` lines before the faces that use
+it: bit 0 = Jak walks through it (camera-only; Minecraft skips it), bits 3–5 mode, bits 6–11
+material (footstep sounds), bits 14–19 event. Files without `usemtl` lines still load (all stone).
 
 ## Implementations
 

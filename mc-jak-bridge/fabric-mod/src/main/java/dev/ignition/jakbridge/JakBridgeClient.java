@@ -41,9 +41,12 @@ import java.util.List;
  * You play Minecraft, in the Minecraft window, with all of Minecraft's gameplay (movement, blocks,
  * hotbar, inventory, mobs, swimming). Jak and Daxter is the world around you:
  *  - Jak renders his world from Steve's eyes; the picture replaces Minecraft's sky (JakSky).
- *  - Jak's level collision becomes invisible barrier blocks, so Steve walks on Jak's ground
- *    (CollisionPlacer), and the same shape goes into the depth buffer so Minecraft blocks hide
- *    behind Jak's walls (JakDepthProxy).
+ *  - Jak's level collision becomes invisible blocks cut to Jak's real floor height, so Steve walks
+ *    on Jak's ground and hears what it's made of (CollisionPlacer, JakGroundBlock), and the same
+ *    shape goes into the depth buffer so Minecraft blocks hide behind Jak's walls (JakDepthProxy).
+ *  - Jak's light (sun, time of day, caves) lights Steve, mobs and your blocks, Steve casts a shadow
+ *    on Jak's ground and far blocks fade into Jak's fog (JakLight, JakRender).
+ *  - Pausing Minecraft pauses Jak; Minecraft's clock follows Jak's.
  *  - Blocks you place are sent to Jak: his enemies have to walk around them, and lava / fire /
  *    cactus kill them. Punching and TNT kill them too; they hurt you back.
  *  - Jak and Daxter themselves are hidden and can't move by themselves; there is no Jak gameplay.
@@ -153,6 +156,24 @@ public final class JakBridgeClient implements ClientModInitializer {
         return bridge;
     }
 
+    public static JakCraftConfig config() {
+        return config;
+    }
+
+    private static volatile boolean lightmapHookSeen = false;
+
+    public static void lightmapHookWorks() {
+        lightmapHookSeen = true;
+    }
+
+    // step smoothing: Minecraft lifts Steve onto a higher block instantly; the camera follows smoothly
+    private static double stepOffset = 0;
+    private static double lastFeetY = Double.NaN;
+    private static long lastStepNanos = 0;
+    // connection messages
+    private static boolean wasConnected = false;
+    private static int connectionTicks = 0;
+
     public static CollisionPlacer collision() {
         return collision;
     }
@@ -164,7 +185,7 @@ public final class JakBridgeClient implements ClientModInitializer {
 
     /** Jak is connected and has handed his world over to Minecraft right now. */
     public static boolean inJakWorld() {
-        return inJakWorld;
+        return inJakWorld && config != null;
     }
 
     /** A cutscene is playing in Jak (Jak's own camera): show his picture full screen. */
@@ -225,6 +246,11 @@ public final class JakBridgeClient implements ClientModInitializer {
             JakDepthProxy.rememberMatrices(context);
         });
         WorldRenderEvents.END.register(context -> cameraSentThisFrame = false);
+        WorldRenderEvents.AFTER_ENTITIES.register(JakRender::renderShadows);
+        WorldRenderEvents.BEFORE_ENTITIES.register(context -> {
+            // if DiffuseLightingMixin can't hook in, point the entity lights at Jak's sun from here
+            if (!JakRender.diffuseHookSeen()) JakRender.applyShaderLights();
+        });
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
             if (cutscene()) {
                 drawContext.draw(); // flush the HUD first so the cutscene covers it
@@ -240,15 +266,18 @@ public final class JakBridgeClient implements ClientModInitializer {
         // stand-ins for Jak's crates and doors can't be broken at all.
         AttackBlockCallback.EVENT.register((player, world, hand, pos, direction) -> {
             BlockState s = world.getBlockState(pos);
-            if (!collision.loaded() || !(s.isOf(Blocks.BARRIER) || s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS))) {
+            if (!collision.loaded() || !CollisionPlacer.isJakBlock(s)) {
                 return ActionResult.PASS;
             }
             if (!collision.isJakGround(pos)) {
-                return s.isOf(Blocks.BARRIER) ? ActionResult.FAIL : ActionResult.PASS;
+                // the stand-ins for Jak's crates and doors
+                return s.isOf(Blocks.LIGHT_GRAY_STAINED_GLASS) ? ActionResult.PASS : ActionResult.FAIL;
             }
             boolean tool = player.getMainHandStack().isIn(ItemTags.PICKAXES)
                     || player.getMainHandStack().isIn(ItemTags.SHOVELS);
             if (!tool) return ActionResult.FAIL;
+            // the top layer, cut to Jak's floor, is mined as it is
+            if (JakGroundBlock.isPartial(s)) return ActionResult.PASS;
             BlockPos at = pos.toImmutable();
             if (world.isClient) {
                 MinecraftServer server = MinecraftClient.getInstance().getServer();
@@ -300,11 +329,43 @@ public final class JakBridgeClient implements ClientModInitializer {
     public static JakSky.Pose onCameraUpdate(Vec3d pos, float yaw, float pitch) {
         cameraSentThisFrame = true;
         cameraHookSeen = true;
-        sendCamera(pos, yaw, pitch);
+        double lift = stepSmoothing();
+        Vec3d eye = lift != 0 ? pos.add(0, lift, 0) : pos;
+        sendCamera(eye, yaw, pitch);
         JakSky.latch();
         JakSky.Pose p = lockPose();
         viewIsLocked = p != null;
+        if (p == null && lift != 0) {
+            // fast view: Minecraft's own camera gets the same smoothing as the one Jak got
+            return new JakSky.Pose(-1, eye.x, eye.y, eye.z, yaw, pitch);
+        }
         return p;
+    }
+
+    /**
+     * Minecraft lifts Steve onto a higher block in one go (stepping up Jak's slopes and ledges), which
+     * jerks the camera up. Instead the camera starts where it was and catches up within ~0.1 s.
+     * Returns how far to move the camera (negative: below Steve's real eyes for a moment).
+     */
+    private static double stepSmoothing() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null || !inJakWorld()) {
+            stepOffset = 0;
+            lastFeetY = Double.NaN;
+            return 0;
+        }
+        long now = System.nanoTime();
+        double dt = lastStepNanos == 0 ? 0 : Math.min(0.1, (now - lastStepNanos) / 1e9);
+        lastStepNanos = now;
+        double feetY = steveFeet(client).y;
+        double rise = Double.isNaN(lastFeetY) ? 0 : feetY - lastFeetY;
+        lastFeetY = feetY;
+        if (client.player.isOnGround() && rise > 0.04 && rise < 1.2 && client.player.getVelocity().y <= 0.05) {
+            stepOffset -= rise; // stepped up: keep the camera where it was
+        }
+        stepOffset *= Math.exp(-dt / 0.05);
+        if (Math.abs(stepOffset) < 0.002 || stepOffset < -1.5) stepOffset = 0;
+        return stepOffset;
     }
 
     private static JakSky.Pose lockPose() {
@@ -377,6 +438,7 @@ public final class JakBridgeClient implements ClientModInitializer {
             lines.add(String.format("Steve %.1f %.1f %.1f (Jak meters)%s", client.player.getX(),
                     client.player.getY() - collision.yOffset(), client.player.getZ(), cutscene ? ", Jak's camera" : ""));
         }
+        lines.add(JakLight.describe() + (JakLight.active() != null && !lightmapHookSeen ? "  <- lighting hook MISSING" : ""));
         int y = 4;
         for (String line : lines) {
             int color = line.contains("NOT locked") || line.contains("DIFFERENT") || line.contains("MISSING") ? 0xFFFF6060 : 0xFFFFFFFF;
@@ -463,6 +525,7 @@ public final class JakBridgeClient implements ClientModInitializer {
 
         BridgeSocket.JakState s = streaming ? freshState() : null;
         inJakWorld = s != null;
+        announceConnection(client, s != null);
         cutscene = s != null && (((int) s.data[5]) & BridgeSocket.JAK_FLAG_CUTSCENE) != 0;
         viewOptionsFallback(client);
         collision.setSteveActive(inJakWorld);
@@ -491,6 +554,19 @@ public final class JakBridgeClient implements ClientModInitializer {
             lastSpawnActivation = activation;
             collision.requestSpawn(s.data[0], s.data[1], s.data[2]);
         }
+    }
+
+    /** Tell the player when Jak's world comes and goes (only when it lasts, not on a hitch). */
+    private static void announceConnection(MinecraftClient client, boolean connected) {
+        if (connected == wasConnected) {
+            connectionTicks = 0;
+            return;
+        }
+        if (++connectionTicks < (connected ? 2 : 40)) return;
+        wasConnected = connected;
+        connectionTicks = 0;
+        say(client, connected ? "Jak and Daxter connected - you're in Jak's world"
+                : "Jak and Daxter disconnected - start play.bat and load your save (F9 shows why)");
     }
 
     private static void say(MinecraftClient client, String message) {
@@ -550,6 +626,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         int flags = BridgeSocket.FLAG_IN_WORLD | BridgeSocket.FLAG_STEVE_MODE;
         if (inDugHole(client.player)) flags |= BridgeSocket.FLAG_IN_HOLE;
         if (client.currentScreen != null) flags |= BridgeSocket.FLAG_SCREEN_OPEN;
+        if (client.isPaused()) flags |= BridgeSocket.FLAG_PAUSED; // Jak pauses with Minecraft
         // window shape (width/height * 1000) in the top 16 bits: Jak renders the same shape
         Framebuffer fb = client.getFramebuffer();
         if (fb != null && fb.textureHeight > 0) {

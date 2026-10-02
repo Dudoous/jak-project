@@ -48,6 +48,7 @@
 (define-extern pc-mc-get-blocks (function pointer int int))
 (define-extern pc-mc-pose-used (function int))
 (define-extern pc-mc-send-actors (function pointer int int))
+(define-extern pc-mc-send-light (function pointer int))
 
 (defconstant MC_RAW_X 0)
 (defconstant MC_RAW_Y 1)
@@ -71,6 +72,7 @@
 ;; CAMERA packet flags (see PROTOCOL.md)
 (defconstant MC_FLAG_STEVE_MODE 8)
 (defconstant MC_FLAG_IN_HOLE 16) ;; Steve is down a hole he dug into Jak's ground
+(defconstant MC_FLAG_PAUSED 32)  ;; Minecraft's game menu is open: singleplayer Minecraft is paused
 
 ;; CAMERA packet buttons
 (defconstant MC_BUTTON_ATTACK 8)
@@ -113,6 +115,7 @@
    (prev-buttons int32)
    (melee-reach  float)     ;; how far Steve's punch reaches (jak units)
    (aspect-saved? symbol)   ;; Jak's aspect settings were changed to match Minecraft
+   (paused-jak?  symbol)    ;; Jak is paused because Minecraft is
    (saved-aspect-auto? symbol)
    (saved-use-vis? symbol)
    (saved-aspect-x int32)
@@ -142,6 +145,8 @@
        :scale (meters 1.0)
        :eye-height (meters 1.62)
        :melee-reach (meters 4.5)))
+
+(define-extern mc-unpause! (function mc-passthrough-state none))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; helpers
@@ -209,6 +214,7 @@
 
 (defun mc-passthrough-release! ((st mc-passthrough-state))
   "Minecraft went away: give Jak back."
+  (mc-unpause! st)
   (when (-> st mode)
     (mc-set-jak-hidden! #f)
     (mc-restore-aspect! st)
@@ -654,6 +660,75 @@
   (none))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Jak's light for Minecraft
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Every other frame Minecraft gets the light Jak would be lit with where Steve stands (LIGHT
+;; packet), so it can light Steve and its own blocks the same way: Jak's light group (the sun, a fill
+;; light, a bounce light from below and the ambient light, blended between levels and times of day
+;; by Jak's mood system; caves and buildings use their own groups), Jak's fog and his clock.
+;; 32 floats: 3 x (direction xyz towards the light, color rgb x level), ambient rgb, fog rgb (0-1),
+;; fog start, fog end (m), fog amount at the end (0-1), hour of the day (0-24), light group index.
+(define *mc-light-data* (new 'global 'array 'float 32))
+(define *mc-light-timer* 0)
+
+(defun mc-send-light! ()
+  (+! *mc-light-timer* 1)
+  (when (and *target* (>= *mc-light-timer* 2))
+    (set! *mc-light-timer* 0)
+    (let* ((tod *time-of-day-context*)
+           (idx (the int (-> *target* draw light-index)))
+           (lg (-> tod light-group (if (< idx 9) idx 0)))
+           (d *mc-light-data*)
+           (fog (-> tod current-fog)))
+      (dotimes (k 3)
+        (let ((l (-> lg lights k))
+              (i (* k 6)))
+          (set! (-> d i) (-> l direction x))
+          (set! (-> d (+ i 1)) (-> l direction y))
+          (set! (-> d (+ i 2)) (-> l direction z))
+          (set! (-> d (+ i 3)) (* (-> l color x) (-> l levels x)))
+          (set! (-> d (+ i 4)) (* (-> l color y) (-> l levels x)))
+          (set! (-> d (+ i 5)) (* (-> l color z) (-> l levels x)))))
+      (set! (-> d 18) (* (-> lg ambi color x) (-> lg ambi levels x)))
+      (set! (-> d 19) (* (-> lg ambi color y) (-> lg ambi levels x)))
+      (set! (-> d 20) (* (-> lg ambi color z) (-> lg ambi levels x)))
+      (set! (-> d 21) (/ (-> fog fog-color x) 255.0))
+      (set! (-> d 22) (/ (-> fog fog-color y) 255.0))
+      (set! (-> d 23) (/ (-> fog fog-color z) 255.0))
+      (set! (-> d 24) (/ (-> fog fog-start) METER_LENGTH))
+      (set! (-> d 25) (/ (-> fog fog-end) METER_LENGTH))
+      ;; Jak's fog fades from fog-max (no fog = 255) at the start to fog-min at the end
+      (set! (-> d 26) (fmax 0.0 (fmin 1.0 (/ (- (-> fog fog-max) (-> fog fog-min)) 255.0))))
+      (set! (-> d 27) (-> tod time))
+      (set! (-> d 28) (the float idx))
+      (pc-mc-send-light (the-as pointer (&-> d 0)))))
+  (none))
+
+(defun mc-sync-pause! ((st mc-passthrough-state))
+  "Minecraft's game menu pauses Minecraft: Jak pauses with it, so his world doesn't go on without
+   you (enemies hitting a Steve who can't move). There's no PAUSE text: Minecraft shows its menu."
+  (cond
+    ((and (mc-packet-flag? st MC_FLAG_PAUSED) (= *master-mode* 'game) (not *progress-process*) (not (movie?)))
+     (set! (-> st paused-jak?) #t)
+     (set! *mc-passthrough-paused* #t)
+     (format 0 "[mc-passthrough] Minecraft paused, pausing Jak~%")
+     (set-master-mode 'pause))
+    ((and (-> st paused-jak?) (not (mc-packet-flag? st MC_FLAG_PAUSED)))
+     (mc-unpause! st)))
+  (none))
+
+(defun mc-unpause! ((st mc-passthrough-state))
+  "Undo mc-sync-pause!."
+  (when (-> st paused-jak?)
+    (set! (-> st paused-jak?) #f)
+    (set! *mc-passthrough-paused* #f)
+    (when (= *master-mode* 'pause)
+      (format 0 "[mc-passthrough] Minecraft unpaused, Jak goes on~%")
+      (set-master-mode 'game)))
+  (none))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; every frame (called from update-camera)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -849,20 +924,23 @@
 (defun mc-passthrough-gameplay! ((st mc-passthrough-state))
   "Everything Minecraft does to Jak's world this frame."
   (mc-sync-aspect! st)
-  (mc-process-events! st)
-  (mc-refresh-blocks!)
-  (mc-deadly-blocks!)
-  (mc-send-solid-actors! st)
-  (mc-stream-levels! st)
-  (mc-collect-near-steve! st)
-  (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
-    ;; punch on click, and keep punching every 0.35 s while held
-    (when (and (logtest? buttons MC_BUTTON_ATTACK)
-               (or (not (logtest? (-> st prev-buttons) MC_BUTTON_ATTACK))
-                   (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
-      (set-time! (-> st last-attack-time))
-      (mc-steve-melee! st))
-    (set! (-> st prev-buttons) buttons))
+  (mc-send-light!)
+  ;; not while Jak is paused (Minecraft's menu, Jak's own menu)
+  (when (and (= *master-mode* 'game) (not *progress-process*))
+    (mc-process-events! st)
+    (mc-refresh-blocks!)
+    (mc-deadly-blocks!)
+    (mc-send-solid-actors! st)
+    (mc-stream-levels! st)
+    (mc-collect-near-steve! st)
+    (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
+      ;; punch on click, and keep punching every 0.35 s while held
+      (when (and (logtest? buttons MC_BUTTON_ATTACK)
+                 (or (not (logtest? (-> st prev-buttons) MC_BUTTON_ATTACK))
+                     (time-elapsed? (-> st last-attack-time) (seconds 0.35))))
+        (set-time! (-> st last-attack-time))
+        (mc-steve-melee! st))
+      (set! (-> st prev-buttons) buttons)))
   (none))
 
 (defun mc-passthrough-report! ((st mc-passthrough-state) (flags int))
@@ -949,6 +1027,7 @@
        #f)
       (else
        (mc-passthrough-compute-pose! st)
+       (mc-sync-pause! st)
        (cond
          ((movie?)
           ;; cutscene: it plays with Jak's own camera and Jak in it (shown once, the cutscene may

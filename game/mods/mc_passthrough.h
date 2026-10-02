@@ -25,6 +25,8 @@ constexpr u16 kTypeEvent = 3;     // Minecraft -> Jak, gameplay events (explosio
 // type 4 is unused (was an experimental mode)
 constexpr u16 kTypeBlocks = 5;  // Minecraft -> Jak, blocks the player built near Steve
 constexpr u16 kTypeActors = 6;  // Jak -> Minecraft, solid Jak objects near Steve (crates, doors)
+constexpr u16 kTypeLight = 7;   // Jak -> Minecraft, Jak's lights, fog and clock where Steve is
+constexpr int kLightFloats = 32;
 constexpr int kMaxActors = 64;
 constexpr int kMaxBlocks = 2048;
 // block kinds (bit flags)
@@ -124,6 +126,14 @@ FramePose rendered_pose();
  * half size (m), normal x, normal z (doors). See ACTORS in PROTOCOL.md.
  */
 u64 goal_send_actors(u32 src, u32 count);
+
+/*!
+ * GOAL: (pc-mc-send-light src) -> int
+ * Sends kLightFloats (32) floats from src as a LIGHT packet: the light Jak would be lit with where
+ * Steve stands (3 directional lights and ambient), Jak's fog and the time of day, so Minecraft can
+ * light Steve and its blocks the same way. See LIGHT in PROTOCOL.md.
+ */
+u64 goal_send_light(u32 src);
 
 /// True while Minecraft is connected (fresh packets) and playing in Jak's world.
 /// Safe to call from any thread.

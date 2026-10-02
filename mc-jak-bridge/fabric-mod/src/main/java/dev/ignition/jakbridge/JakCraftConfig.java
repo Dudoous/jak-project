@@ -29,6 +29,11 @@ import java.util.Properties;
  *                      behind when you move. F6 switches in game.
  *   jak_damage_in_creative  true (default): Jak's enemies, pits and lava hurt Steve in creative
  *                      mode too (your hearts show while you're hurt). false: only in survival.
+ *   jak_light          true (default): Steve, mobs and your blocks are lit by Jak's light (sun,
+ *                      time of day, caves), shaded from Jak's sun, and fade into Jak's fog
+ *   jak_light_strength how bright Jak's light is on Minecraft things (default 1.0)
+ *   shadows            true (default): Steve and mobs cast a shadow on Jak's ground
+ *   sync_clock         true (default): Minecraft's time of day follows Jak's
  */
 public final class JakCraftConfig {
     private final Path file;
@@ -145,6 +150,26 @@ public final class JakCraftConfig {
     public void setViewLocked(boolean locked) {
         props.setProperty("view_sync", locked ? "locked" : "fast");
         save();
+    }
+
+    public boolean jakLight() {
+        return !"false".equalsIgnoreCase(props.getProperty("jak_light", "true").trim());
+    }
+
+    public float jakLightStrength() {
+        try {
+            return (float) Math.max(0.2, Math.min(3.0, Double.parseDouble(props.getProperty("jak_light_strength", "1.0").trim())));
+        } catch (NumberFormatException e) {
+            return 1.0f;
+        }
+    }
+
+    public boolean shadows() {
+        return !"false".equalsIgnoreCase(props.getProperty("shadows", "true").trim());
+    }
+
+    public boolean syncClock() {
+        return !"false".equalsIgnoreCase(props.getProperty("sync_clock", "true").trim());
     }
 
     public boolean jakDamageInCreative() {

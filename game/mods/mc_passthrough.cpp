@@ -380,6 +380,32 @@ bool steve_mode_active() {
   return clock_type::now() - g_latest_time < std::chrono::milliseconds(1500);
 }
 
+u64 goal_send_light(u32 src) {
+  const float* in = Ptr<float>(src).c();
+  // header: magic u32, version u16, type u16, seq u32; then the floats
+  u8 buf[12 + kLightFloats * 4];
+  sockaddr_in client;
+  u32 seq;
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_have_client || g_sock == kBadSock) {
+      return 0;
+    }
+    client = g_client;
+    seq = g_send_seq++;
+  }
+  const u32 magic = kMagic;
+  const u16 version = kVersion, type = kTypeLight;
+  memcpy(buf, &magic, 4);
+  memcpy(buf + 4, &version, 2);
+  memcpy(buf + 6, &type, 2);
+  memcpy(buf + 8, &seq, 4);
+  memcpy(buf + 12, in, kLightFloats * 4);
+  int n = sendto(g_sock, (const char*)buf, (int)sizeof(buf), 0, (const sockaddr*)&client,
+                 (int)sizeof(client));
+  return n == (int)sizeof(buf) ? 1 : 0;
+}
+
 u64 goal_send_state(u32 src) {
   const float* in = Ptr<float>(src).c();
   sockaddr_in client;

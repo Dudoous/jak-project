@@ -76,6 +76,20 @@ class BridgeSocketTest {
                 assertEquals(8, state.seq);
                 assertEquals(7f, state.data[7]);
                 assertEquals(true, Float.isNaN(state.data[8]));
+
+                // Jak's light (LIGHT, 12-byte header + 32 floats)
+                ByteBuffer light = ByteBuffer.allocate(12 + 4 * BridgeSocket.LIGHT_FLOATS).order(ByteOrder.LITTLE_ENDIAN);
+                light.putInt(BridgeSocket.MAGIC).putShort((short) 1).putShort(BridgeSocket.TYPE_LIGHT).putInt(9);
+                for (int i = 0; i < BridgeSocket.LIGHT_FLOATS; i++) light.putFloat(i * 0.5f);
+                fakeRuntime.send(new DatagramPacket(light.array(), light.capacity(), p.getSocketAddress()));
+                BridgeSocket.Light l = null;
+                for (int i = 0; i < 100 && l == null; i++) {
+                    Thread.sleep(20);
+                    l = bridge.latestLight();
+                }
+                assertNotNull(l);
+                assertEquals(13.5f, l.data[JakLight.HOUR]);
+                assertEquals(10.5f, l.data[JakLight.FOG_COLOR]);
             }
         }
     }

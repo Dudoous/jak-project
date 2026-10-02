@@ -24,19 +24,32 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
     memory at once, so when you fly somewhere new (creative), the area you're in and its nearest
     neighbour are loaded for you — give it a second or two to appear;
   - **cutscenes** play full screen with Jak's own camera (and Jak in them).
-- **Jak's ground is solid for Steve**: Jak's level shape becomes invisible barrier blocks, so you
-  walk on Jak's floors, bump into Jak's walls, and swim in Jak's water. **Crates** (scout fly
-  boxes too) and **closed doors** are solid as well, until a crate breaks or a door opens.
+- **Jak's ground is solid for Steve**: Jak's level shape becomes invisible blocks, so you walk on
+  Jak's floors, bump into Jak's walls, and swim in Jak's water. The top of each block is cut to
+  **Jak's real floor height** (to 1/16 of a block), so your feet are on Jak's ground (not floating
+  or sunk in) and slopes are smooth instead of 1-block stairs; the camera glides up the small
+  steps. Your **footsteps sound like Jak's ground**: grass, sand, wood, metal, snow, mud, ice,
+  stone. Invisible walls that only stop Jak's camera are gone. **Crates** (scout fly boxes too)
+  and **closed doors** are solid as well, until a crate breaks or a door opens.
+- **Jak's light on Steve**: Steve, mobs, your blocks and the item in your hand are lit by Jak's
+  light where you stand — bright at noon, orange at sunset, blue at night, dark in caves — and
+  shaded from the side Jak's sun comes from. Far Minecraft blocks fade into Jak's fog, and Steve and
+  mobs cast a **shadow on Jak's ground** (like Jak's own, handy for jumping between platforms).
+  Minecraft's clock follows Jak's, so night falls in both games at once. Settings in
+  `jakbridge.properties`: `jak_light` (on/off), `jak_light_strength` (default 1.0 — raise it if
+  things look too dark), `shadows`, `sync_clock`.
+- **Pausing Minecraft pauses Jak** (Esc menu): his enemies wait for you. Minecraft tells you when
+  Jak connects or disconnects.
 - **Steve is Jak-sized** in Jak's world: as tall as Jak (2.8 blocks), **walks as fast as Jak runs**
   (10 blocks/s, sprinting 13), jumps 2.5 blocks and reaches further. Change it in
   `.minecraft/config/jakbridge.properties`: `steve_scale` (1 = normal Minecraft size),
   `steve_speed` (blocks per second), `steve_jump` (blocks).
 - In Jak's world Minecraft's **view bobbing, hurt tilt and FOV effects are off** — they made
   Minecraft's blocks and holes swim against Jak's picture as you walked.
-- **Digging into Jak's ground**: hit Jak's ground with a **pickaxe or shovel** and it turns into
-  dirt (stone deeper down) that you mine like normal Minecraft ground; the hole gets dirt walls
-  and you can dig down and tunnel. Fists and swords don't dig, so fighting never knocks holes in
-  the floor. Holes are saved with your world.
+- **Digging into Jak's ground**: hit Jak's ground with a **pickaxe or shovel**: the top layer
+  breaks right away, the ground below turns into dirt (stone deeper down) that you mine like normal
+  Minecraft ground; the hole gets dirt walls and you can dig down and tunnel. Fists and swords
+  don't dig, so fighting never knocks holes in the floor. Holes are saved with your world.
 - **Block placing in Jak's world**: place blocks on Jak's ground and walls. They sit *inside* Jak's
   world — Jak's walls and hills hide them like any real object — and Jak's world reacts:
   - Jak's enemies have to **walk around your blocks**; a wall of blocks stops them.
@@ -77,7 +90,7 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
    Jak's level shape). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.12.0.jar` (from the
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.13.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
 3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
    **Fancy** (not Fabulous), **Max Framerate 120 or more** (or Unlimited) so Minecraft picks up
@@ -134,3 +147,7 @@ and press **R**; with Sandover picked (arrow keys to change), press **R** again 
 - Holes only exist on Minecraft's side: Jak's enemies (and Jak's own collision) walk over them
   as if they weren't there, and looking up from inside a hole shows Jak's world from below.
 - Moving platforms and other moving objects aren't solid for Steve yet (only crates and doors).
+- Floors are exact; walls are still whole blocks, so you can stop up to a block short of a wall.
+- Footstep sounds and camera-only walls need the collision files from this version's extractor:
+  run play.bat setup in a new folder (worlds from older versions are converted as you walk around;
+  holes you dug before keep working).
