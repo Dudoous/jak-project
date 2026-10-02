@@ -24,7 +24,7 @@ ignored.
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
-| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 3 Minecraft is playing (always set by the mod), bit 4 Steve is down a hole he dug into Jak's ground (Jak waits on the surface), bit 5 Minecraft's game menu is open (singleplayer paused: Jak pauses too, without his PAUSE text), bits 16–31 Minecraft window width/height × 1000 |
+| 12     | u32  | flags   | bit 0 in world, bit 1 a screen/menu is open, bit 3 Minecraft is playing (always set by the mod), bit 4 Steve is down a hole he dug into Jak's ground (Jak waits on the surface), bit 5 Minecraft's game menu is open (singleplayer paused: Jak pauses too, without his PAUSE text), bit 6 Steve's left click also makes the hidden Jak punch (`jak_punch`), bits 16–31 Minecraft window width/height × 1000 |
 | 16     | f64  | x       | camera (eye) position in Jak meters (Minecraft Y minus `y_offset`, normally 0) |
 | 24     | f64  | y       | |
 | 32     | f64  | z       | |
@@ -43,11 +43,11 @@ The runtime considers Minecraft "connected" while the newest CAMERA packet is yo
 `(-> *mc-passthrough* timeout-ms)` (default 1500 ms). While connected, Jak is hidden and frozen and
 the camera is at Steve's eyes; after that Jak comes back.
 
-## JAK_STATE (type 2, Jak → Minecraft, 56 bytes; older runtimes send 44 bytes, without `[8..10]`)
+## JAK_STATE (type 2, Jak → Minecraft, 100 bytes; older runtimes send 56 bytes (without `[11..21]`) or 44 bytes (without `[8..10]`))
 
 | Offset | Type   | Field | Notes |
 |-------:|--------|-------|-------|
-| 12     | f32[11] | data | see below |
+| 12     | f32[22] | data | see below |
 
 | data | meaning |
 |------|---------|
@@ -58,6 +58,13 @@ the camera is at Steve's eyes; after that Jak comes back.
 | `[6]` | activation id — changes each time Minecraft takes over and each time the game moved Jak somewhere by itself (warp gate, launcher, checkpoint); Minecraft teleports Steve to `[0..2]` once per id |
 | `[7]` | Jak water surface at Steve (Jak meters), below −50000 = no water |
 | `[8..10]` | where the last thing that hurt Steve was (Jak meters), so Minecraft knocks him away from it; below −50000 = no direction (the ground: lava, a pit) |
+| `[11]` | how far Jak was from Steve's feet (m) at the end of the frame, before he was put back on them. Jak is put on Steve's feet twice a frame: at the start (controller hook, newest CAMERA packet, before Jak and his world run) and at the end (camera hook) |
+| `[12]` | 1 while Jak is kept on Steve's feet, 0 while the game is using him, Steve is down a hole, or Steve hasn't arrived where the game put Jak yet |
+| `[13]`, `[14]` | Jak enemies Steve killed, Steve's left clicks in Jak's world |
+| `[15]` | what the last left click did: 0 nothing yet, 1 hit (killed / broke / pressed), 2 hit an enemy that ignored it, 3 nothing in reach |
+| `[16]`, `[17]`, `[18]`, `[19]` | Jak's two level slots: level-load-info index (0 = empty) and state (0 empty, 1 loading, 2 loaded, 3 active, +4 drawn) |
+| `[20]` | level-load-info index of the level Steve is in, which the runtime loads around him |
+| `[21]` | unused |
 
 Sent every frame from GOAL with `(pc-mc-send-state ptr)` while Minecraft is connected. If no
 JAK_STATE arrives for 500 ms, Minecraft behaves normally.

@@ -34,6 +34,11 @@ import java.util.Properties;
  *   jak_light_strength how bright Jak's light is on Minecraft things (default 1.0)
  *   shadows            true (default): Steve and mobs cast a shadow on Jak's ground
  *   sync_clock         true (default): Minecraft's time of day follows Jak's
+ *   predict_view       true (default): Jak draws his world from where Steve will be by the time the
+ *                      picture is on screen (Steve's speed x the measured delay), so Jak's world
+ *                      keeps up with you when you move instead of trailing behind
+ *   jak_punch          true (default): your left click also makes the hidden Jak punch, from
+ *                      Steve's feet, the way Steve looks (Jak's own punch, on top of Steve's)
  */
 public final class JakCraftConfig {
     private final Path file;
@@ -174,6 +179,14 @@ public final class JakCraftConfig {
 
     public boolean jakDamageInCreative() {
         return !"false".equalsIgnoreCase(props.getProperty("jak_damage_in_creative", "true").trim());
+    }
+
+    public boolean predictView() {
+        return !"false".equalsIgnoreCase(props.getProperty("predict_view", "true").trim());
+    }
+
+    public boolean jakPunch() {
+        return !"false".equalsIgnoreCase(props.getProperty("jak_punch", "true").trim());
     }
 
     public int collisionRadius() {

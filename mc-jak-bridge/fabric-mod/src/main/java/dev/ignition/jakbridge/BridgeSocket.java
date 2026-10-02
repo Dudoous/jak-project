@@ -29,8 +29,9 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int EVENT_PACKET_SIZE = 36;
     public static final int DEFAULT_PORT = 47800;
     public static final int CAMERA_PACKET_SIZE = 88;
-    /** JAK_STATE from this version of Jak's side; older ones send 44 bytes (8 floats). */
-    public static final int JAK_STATE_PACKET_SIZE = 56;
+    /** JAK_STATE from this version of Jak's side (22 floats); older ones send 56 (11) or 44 (8). */
+    public static final int JAK_STATE_PACKET_SIZE = 100;
+    public static final int JAK_STATE_FLOATS = 22;
     public static final int JAK_STATE_MIN_PACKET_SIZE = 44;
     /** Most blocks one BLOCKS packet carries (must match kMaxBlocks in mc_passthrough.h). */
     public static final int MAX_BLOCKS = 2048;
@@ -45,6 +46,14 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int FLAG_PAUSED = 32;
     /** Steve is down a hole he dug into Jak's ground: Jak stays up on the surface. */
     public static final int FLAG_IN_HOLE = 16;
+    /** Steve's left click also makes the hidden Jak punch (jak_punch setting). */
+    public static final int FLAG_JAK_PUNCH = 64;
+
+    /** JAK_STATE data[15]: what Steve's last left click did in Jak's world. */
+    public static final int PUNCH_NONE = 0;
+    public static final int PUNCH_HIT = 1;
+    public static final int PUNCH_NO_EFFECT = 2;
+    public static final int PUNCH_MISSED = 3;
 
     /** JAK_STATE flag: Minecraft has taken over. data[0..2] = Jak's position when that happened,
      *  data[6] = activation id (changes each time it starts again). */
@@ -86,7 +95,7 @@ public final class BridgeSocket implements AutoCloseable {
      *  didn't send are NaN. */
     public static final class JakState {
         public int seq;
-        public final float[] data = new float[11];
+        public final float[] data = new float[JAK_STATE_FLOATS];
         public long receivedNanos;
     }
 

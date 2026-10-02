@@ -331,7 +331,9 @@ public final class JakBridgeClient implements ClientModInitializer {
         cameraHookSeen = true;
         double lift = stepSmoothing();
         Vec3d eye = lift != 0 ? pos.add(0, lift, 0) : pos;
-        sendCamera(eye, yaw, pitch);
+        // Jak draws from where Steve will be when the picture is on screen, so Jak's world keeps up
+        // with Steve instead of trailing behind him (the locked view then draws Minecraft from there too)
+        sendCamera(eye.add(viewPrediction()), yaw, pitch);
         JakSky.latch();
         JakSky.Pose p = lockPose();
         viewIsLocked = p != null;
@@ -340,6 +342,27 @@ public final class JakBridgeClient implements ClientModInitializer {
             return new JakSky.Pose(-1, eye.x, eye.y, eye.z, yaw, pitch);
         }
         return p;
+    }
+
+    /** predict_view: where Steve will be when Jak's picture of him is on screen. */
+    private static final JakSync.ViewPredictor predictor = new JakSync.ViewPredictor();
+
+    /**
+     * How far ahead of Steve's eyes Jak should draw his world: Steve's velocity times the time from
+     * sending the camera to Jak's picture being on screen. Without this Jak's world (and in the
+     * locked view the whole picture) shows where Steve was a few frames ago.
+     */
+    private static Vec3d viewPrediction() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (config == null || !config.predictView() || !inJakWorld() || cutscene || client.player == null
+                || client.isPaused()) {
+            predictor.reset();
+            return Vec3d.ZERO;
+        }
+        Vec3d feet = steveFeet(client);
+        predictor.update(feet.x, feet.y, feet.z, System.nanoTime());
+        double[] a = predictor.ahead(jakDelayMs);
+        return new Vec3d(a[0], a[1], a[2]);
     }
 
     /**
@@ -439,6 +462,7 @@ public final class JakBridgeClient implements ClientModInitializer {
                     client.player.getY() - collision.yOffset(), client.player.getZ(), cutscene ? ", Jak's camera" : ""));
         }
         lines.add(JakLight.describe() + (JakLight.active() != null && !lightmapHookSeen ? "  <- lighting hook MISSING" : ""));
+        lines.addAll(jakSyncLines());
         int y = 4;
         for (String line : lines) {
             int color = line.contains("NOT locked") || line.contains("DIFFERENT") || line.contains("MISSING") ? 0xFFFF6060 : 0xFFFFFFFF;
@@ -447,6 +471,13 @@ public final class JakBridgeClient implements ClientModInitializer {
         }
     }
 
+
+    /** How well Jak keeps up with Steve, what punches do, which levels are loaded. */
+    private static List<String> jakSyncLines() {
+        BridgeSocket.JakState s = bridge == null ? null : bridge.latestJakState();
+        if (s == null || System.nanoTime() - s.receivedNanos > JAK_STATE_TIMEOUT_NANOS) return new ArrayList<>();
+        return JakSync.statusLines(s.data, predictor.lastAhead(), config.predictView(), config.jakPunch());
+    }
 
     /** /jakcraft: everything needed to tell what's wrong. */
     private static List<String> statusLines(MinecraftClient client) {
@@ -463,6 +494,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         out.add("Collision: " + collision.status());
         if (collision.worldWarning() != null) out.add("World: " + collision.worldWarning());
         out.add("Your blocks sent to Jak: " + collision.lastBlocksSent());
+        out.addAll(jakSyncLines());
         if (client.player != null) {
             out.add(String.format("Steve at %.1f %.1f %.1f (Jak meters), Jak water surface %s",
                     client.player.getX(), client.player.getY() - collision.yOffset(), client.player.getZ(),
@@ -548,11 +580,32 @@ public final class JakBridgeClient implements ClientModInitializer {
         } else {
             JakWater.clear();
         }
+        showJakFeedback(client, s);
         int activation = (int) s.data[6];
         if (activation != lastSpawnActivation && collision.loaded()) {
             // Jak just handed over: put Steve where Jak was standing.
             lastSpawnActivation = activation;
             collision.requestSpawn(s.data[0], s.data[1], s.data[2]);
+        }
+    }
+
+    private static int lastPunchCount = -1;
+    private static int loadingTicks = 0;
+
+    /** Action bar: a punch that did nothing to an enemy, and a Jak level still loading around Steve. */
+    private static void showJakFeedback(MinecraftClient client, BridgeSocket.JakState s) {
+        if (!JakSync.hasSyncFields(s.data)) return; // older Jak side
+        int punches = Math.round(s.data[JakSync.PUNCHES]);
+        if (lastPunchCount >= 0 && punches > lastPunchCount
+                && Math.round(s.data[JakSync.PUNCH_RESULT]) == BridgeSocket.PUNCH_NO_EFFECT) {
+            say(client, "That one shrugged off your punch - try TNT or lava");
+        }
+        lastPunchCount = punches;
+        String loading = cutscene ? null : JakSync.levelStillLoading(s.data);
+        if (loading == null) {
+            loadingTicks = 0;
+        } else if (++loadingTicks % 20 == 10) { // after half a second, then once a second
+            say(client, "Jak is loading " + loading + "...");
         }
     }
 
@@ -627,6 +680,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         if (inDugHole(client.player)) flags |= BridgeSocket.FLAG_IN_HOLE;
         if (client.currentScreen != null) flags |= BridgeSocket.FLAG_SCREEN_OPEN;
         if (client.isPaused()) flags |= BridgeSocket.FLAG_PAUSED; // Jak pauses with Minecraft
+        if (config != null && config.jakPunch()) flags |= BridgeSocket.FLAG_JAK_PUNCH;
         // window shape (width/height * 1000) in the top 16 bits: Jak renders the same shape
         Framebuffer fb = client.getFramebuffer();
         if (fb != null && fb.textureHeight > 0) {

@@ -7,6 +7,13 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
   jumping, swimming, placing and breaking blocks, hotbar, inventory, crafting, health, mobs.
 - What you see around you is **Jak's world**, rendered by OpenGOAL from Steve's eyes and drawn by
   Minecraft in place of its sky.
+- **Jak is exactly where Steve is, in real time**: twice every frame (before Jak's world runs, with
+  the newest position from Minecraft, and again at the end) the hidden Jak is put on Steve's feet,
+  so enemies, pickups, triggers and level loading all react to where Steve is *now*, not where he
+  was a frame ago. `/jakcraft` shows how far apart they got (should be a few centimetres).
+- **Jak's world keeps up with you** (`predict_view`, on by default): Jak draws his world from where
+  Steve will be by the time the picture reaches your screen, so it no longer trails behind you
+  when you walk, sprint or fly.
 - **Jak and Daxter are gone** — hidden, and they can't move by themselves. There is no Jak
   gameplay; OpenGOAL keeps Jak's world, enemies and water running around you, and the world
   reacts to Steve as it would to Jak:
@@ -22,7 +29,8 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
   - Jak's world loads around **Steve**: the next areas, enemies and pickups load where Steve
     looks and walks (also in third person view). Jak and Daxter can only keep **2 areas** in
     memory at once, so when you fly somewhere new (creative), the area you're in and its nearest
-    neighbour are loaded for you — give it a second or two to appear;
+    neighbour are loaded for you — give it a second or two to appear (the action bar says
+    "Jak is loading Misty Island..." until it's there);
   - **cutscenes** play full screen with Jak's own camera (and Jak in them).
 - **Jak's ground is solid for Steve**: Jak's level shape becomes invisible blocks, so you walk on
   Jak's floors, bump into Jak's walls, and swim in Jak's water. The top of each block is cut to
@@ -57,7 +65,9 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
   - **TNT / creepers**: the explosion kills Jak's enemies in the blast.
 - **Fighting**: left click kills the Jak enemy Steve looks at, up to ~7 blocks away (lurkers,
   crabs, snakes, bats, plants, spiders — every kind, armoured ones too). It aims from Steve's own
-  eyes and where *he* looks, so it works in third person view and front view as well.
+  eyes and where *he* looks, so it works in third person view and front view as well. The hidden
+  Jak also throws his own punch from Steve's feet (`jak_punch=false` turns that off). `/jakcraft`
+  shows what your last punch did (hit, ignored, or nothing in reach).
 - **Getting hurt**: Jak's enemies hurt Steve — 2 hearts a hit, at most one hit every 0.75 s — and
   knock him back; pits, lava, dark eco and the like kill him like they kill Jak. It works in
   **creative mode too** (creative has no health bar, so your hearts show above the hotbar while
@@ -90,7 +100,7 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
    Jak's level shape). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.13.0.jar` (from the
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.14.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
 3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
    **Fancy** (not Fabulous), **Max Framerate 120 or more** (or Unlimited) so Minecraft picks up

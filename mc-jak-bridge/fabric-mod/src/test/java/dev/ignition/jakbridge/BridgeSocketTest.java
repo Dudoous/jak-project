@@ -53,7 +53,7 @@ class BridgeSocketTest {
                 // reply like the runtime does, to the sender's address
                 ByteBuffer out = ByteBuffer.allocate(BridgeSocket.JAK_STATE_PACKET_SIZE).order(ByteOrder.LITTLE_ENDIAN);
                 out.putInt(BridgeSocket.MAGIC).putShort((short) 1).putShort(BridgeSocket.TYPE_JAK_STATE).putInt(7);
-                for (int i = 0; i < 11; i++) out.putFloat(i * 1.5f);
+                for (int i = 0; i < BridgeSocket.JAK_STATE_FLOATS; i++) out.putFloat(i * 1.5f);
                 fakeRuntime.send(new DatagramPacket(out.array(), out.capacity(), p.getSocketAddress()));
 
                 BridgeSocket.JakState state = null;
@@ -65,6 +65,8 @@ class BridgeSocketTest {
                 assertEquals(7, state.seq);
                 assertEquals(4.5f, state.data[3]);
                 assertEquals(15f, state.data[10]);     // where the last hit came from
+                assertEquals(16.5f, state.data[11]);   // how far Jak was behind Steve
+                assertEquals(31.5f, state.data[21]);
 
                 // an older Jak side sends 8 floats: the rest reads as "not sent"
                 ByteBuffer old = ByteBuffer.allocate(BridgeSocket.JAK_STATE_MIN_PACKET_SIZE).order(ByteOrder.LITTLE_ENDIAN);

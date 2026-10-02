@@ -73,6 +73,7 @@
 (defconstant MC_FLAG_STEVE_MODE 8)
 (defconstant MC_FLAG_IN_HOLE 16) ;; Steve is down a hole he dug into Jak's ground
 (defconstant MC_FLAG_PAUSED 32)  ;; Minecraft's game menu is open: singleplayer Minecraft is paused
+(defconstant MC_FLAG_JAK_PUNCH 64) ;; Steve's left click also makes (the hidden) Jak punch, from Steve's feet
 
 ;; CAMERA packet buttons
 (defconstant MC_BUTTON_ATTACK 8)
@@ -94,6 +95,13 @@
 ;; JAK_STATE flags
 (defconstant JAK_STATE_FLAG_STEVE 2)
 (defconstant JAK_STATE_FLAG_CUTSCENE 4) ;; Jak's own camera: Minecraft shows the picture full screen
+(defconstant MC_STATE_FLOATS 22)        ;; JAK_STATE payload size (see PROTOCOL.md)
+
+;; what Steve's last left click did (JAK_STATE data[15], shown by /jakcraft in Minecraft)
+(defconstant MC_PUNCH_NONE 0)
+(defconstant MC_PUNCH_HIT 1)        ;; killed an enemy / broke a crate / pressed a button
+(defconstant MC_PUNCH_NO_EFFECT 2)  ;; hit an enemy that ignored every kind of attack
+(defconstant MC_PUNCH_MISSED 3)     ;; nothing Steve can hit within reach where he looks
 
 (deftype mc-passthrough-state (structure)
   ((enabled?     symbol)    ;; master switch
@@ -120,9 +128,14 @@
    (saved-use-vis? symbol)
    (saved-aspect-x int32)
    (saved-aspect-y int32)
+   (punches      int32)     ;; Steve's left clicks in Jak's world
+   (punch-result int32)     ;; MC_PUNCH_*: what the last one did
+   (pad-prev-buttons int32) ;; Minecraft buttons last frame, as seen by the controller hook
+   (jak-gap      float)     ;; how far Jak was from Steve's feet before he was put back (m)
+   (stream-want  int32)     ;; level-load-info index of the level streamed around Steve (0 = none)
    (event        float 5)
    (raw          float 20)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
-   (out          float 11)  ;; JAK_STATE payload
+   (out          float 22)  ;; JAK_STATE payload (MC_STATE_FLOATS)
    (spawn        vector :inline) ;; where Minecraft must put Steve (jak units, feet)
    (last-park    vector :inline) ;; where we left Jak last frame
    (pos          vector :inline) ;; the camera (Minecraft's, also in third person)
@@ -344,22 +357,28 @@
 (defun mc-hit-enemy! ((p process))
   "Steve's hit kills a Jak enemy. Jak's enemies each take Jak's attacks their own way (crabs hide in
    their shell, armoured lurkers only die to red eco, bullies only to a ground pound), so Steve's hit
-   tries until one works: instant death (all lurkers), an explosion, a ground pound."
+   tries until one works: instant death (all lurkers), an explosion, a ground pound, Jak's punch,
+   Jak's spin kick. Returns #t if it worked."
   (let ((before (mc-state-name p)))
     (if (type-type? (-> p type) nav-enemy) (send-event p 'instant-death :from *target*))
     (if (= (mc-state-name p) before) (mc-send-attack! p 'explode))
     (if (= (mc-state-name p) before) (mc-send-attack! p 'flop))
+    (if (= (mc-state-name p) before) (mc-send-attack! p 'punch))
+    (if (= (mc-state-name p) before) (mc-send-attack! p 'spin))
     (cond
       ((= (mc-state-name p) before)
-       (format 0 "[mc-passthrough] Steve hit ~A, it didn't care (~A)~%" (-> p name) before))
+       (format 0 "[mc-passthrough] Steve hit ~A, it didn't care (~A)~%" (-> p name) before)
+       #f)
       (else
        (+! (-> *mc-passthrough* kills) 1)
-       (format 0 "[mc-passthrough] Steve hit ~A: ~A -> ~A~%" (-> p name) before (mc-state-name p)))))
-  (none))
+       (format 0 "[mc-passthrough] Steve hit ~A: ~A -> ~A~%" (-> p name) before (mc-state-name p))
+       #t))))
 
 (defun mc-steve-hit! ((p process))
+  (set! (-> *mc-passthrough* punch-result) MC_PUNCH_HIT)
   (cond
-    ((mc-enemy? p) (mc-hit-enemy! p))
+    ((mc-enemy? p)
+     (if (not (mc-hit-enemy! p)) (set! (-> *mc-passthrough* punch-result) MC_PUNCH_NO_EFFECT)))
     ((type-type? (-> p type) basebutton)
      (format 0 "[mc-passthrough] Steve punched button ~A~%" (-> p name))
      (mc-send-attack! p 'flop)
@@ -417,7 +436,10 @@
               (set! *mc-search-best-score* score)))))
       #f)
     *kernel-context*)
-  (if *mc-search-best* (mc-steve-hit! *mc-search-best*))
+  (+! (-> st punches) 1)
+  (if *mc-search-best*
+    (mc-steve-hit! *mc-search-best*)
+    (set! (-> st punch-result) MC_PUNCH_MISSED))
   (none))
 
 (defun mc-explode! ((x float) (y float) (z float) (radius float))
@@ -805,9 +827,19 @@
        (< (-> info bsphere w) (meters 5000.0))
        (!= (-> info name) 'title)))
 
+(defun mc-level-in-memory? ((name symbol))
+  "#t if that level is loading, loaded or showing."
+  (let ((s (level-status *level* name)))
+    (or (= s 'active) (= s 'loaded) (= s 'loading) (= s 'loading-bt) (= s 'login))))
+
+(defun mc-level-showing? ((name symbol))
+  "#t if that level is loaded and being drawn."
+  (let ((lev (level-get *level* name)))
+    (and lev (= (-> lev status) 'active) (-> lev display?))))
+
 (defun mc-stream-levels! ((st mc-passthrough-state))
   (+! *mc-stream-timer* 1)
-  (when (>= *mc-stream-timer* 30)
+  (when (>= *mc-stream-timer* 15) ;; 4 times a second
     (set! *mc-stream-timer* 0)
     (let ((best (the-as level-load-info #f))
           (best-score 1000000.0)
@@ -824,21 +856,26 @@
                 (set! best info)
                 (set! best-score score)))))
         (set! rest (cdr rest)))
-      ;; its neighbour: the other level whose edge is closest
+      ;; its neighbour: the other level whose edge is closest. One that is already in memory wins
+      ;; unless another is a lot closer, so flying around doesn't keep throwing levels away half
+      ;; loaded.
       (set! rest *level-load-list*)
       (while (not (null? rest))
         (let ((info (the-as level-load-info (-> (the-as symbol (car rest)) value))))
           (when (and info (!= info best) (mc-stream-level? info))
             (let ((edge (- (vector-vector-distance (-> st pos) (-> info bsphere)) (-> info bsphere w))))
+              (if (mc-level-in-memory? (-> info name)) (set! edge (- edge (meters 150.0))))
               (when (< edge second-score)
                 (set! second info)
                 (set! second-score edge)))))
         (set! rest (cdr rest)))
       (when best
-        (if (= (level-status *level* (-> best name)) 'active)
+        (set! (-> st stream-want) (-> best index))
+        (if (mc-level-showing? (-> best name))
           (set! *mc-stream-misses* 0)
           (+! *mc-stream-misses* 1))
-        (when (>= *mc-stream-misses* 2)
+        ;; not showing for ~0.75 s: ask for it (asking again while it loads changes nothing)
+        (when (>= *mc-stream-misses* 3)
           (set! *mc-stream-misses* 0)
           (let ((a (-> best name))
                 (b (if second (-> second name) (the-as symbol #f))))
@@ -895,6 +932,13 @@
   (format 0 "[mc-passthrough] the game moved Jak, sending Steve after him (~D)~%" (-> st handovers))
   (none))
 
+(defun mc-snap-jak! ((st mc-passthrough-state))
+  "Put Jak exactly on Steve's feet, standing still."
+  (move-to-point! (-> *target* control) (-> st feet))
+  (set! (-> *target* control transv quad) (the-as uint128 0))
+  (set! (-> st last-park quad) (-> st feet quad))
+  (none))
+
 (defun mc-passthrough-park-jak! ((st mc-passthrough-state))
   "Jak is hidden and dragged along under Steve's feet, so levels, actors and pickups keep streaming
    around Steve and Jak's world reacts to him. His controller is cut off (mc-passthrough-pad!)."
@@ -916,9 +960,9 @@
                  (time-elapsed? (-> st handover-time) (seconds 3)))
            (set! (-> st parked?) #t))
          (when (-> st parked?)
-           (move-to-point! (-> *target* control) feet)
-           (set! (-> *target* control transv quad) (the-as uint128 0))
-           (set! (-> st last-park quad) (-> feet quad)))))))
+           ;; how far Jak got from Steve since the start of the frame (shown by /jakcraft)
+           (set! (-> st jak-gap) (/ (vector-vector-distance (-> *target* control trans) feet) METER_LENGTH))
+           (mc-snap-jak! st))))))
   (none))
 
 (defun mc-passthrough-gameplay! ((st mc-passthrough-state))
@@ -943,6 +987,16 @@
       (set! (-> st prev-buttons) buttons)))
   (none))
 
+(defun mc-level-code ((lev level))
+  "A level slot for JAK_STATE: 0 empty, 1 loading, 2 loaded, 3 active; +4 if it is being drawn."
+  (let ((s (-> lev status)))
+    (+ (cond
+         ((or (= s 'loading) (= s 'loading-bt) (= s 'login)) 1)
+         ((= s 'loaded) 2)
+         ((= s 'active) 3)
+         (else 0))
+       (if (and (!= s 'inactive) (-> lev display?)) 4 0))))
+
 (defun mc-passthrough-report! ((st mc-passthrough-state) (flags int))
   "Jak -> Minecraft state (see JAK_STATE in PROTOCOL.md)."
   (let ((inv-s (/ 1.0 (-> st scale))))
@@ -965,6 +1019,19 @@
        (set! (-> st out 8) MC_NO_WATER)
        (set! (-> st out 9) MC_NO_WATER)
        (set! (-> st out 10) MC_NO_WATER))))
+  ;; how well Jak keeps up with Steve, what Steve's punches do, which levels are loaded
+  (set! (-> st out 11) (-> st jak-gap))
+  (set! (-> st out 12) (if (-> st parked?) 1.0 0.0))
+  (set! (-> st out 13) (the float (-> st kills)))
+  (set! (-> st out 14) (the float (-> st punches)))
+  (set! (-> st out 15) (the float (-> st punch-result)))
+  (dotimes (i 2)
+    (let ((lev (-> *level* level i)))
+      (set! (-> st out (+ 16 (* 2 i)))
+            (if (and (!= (-> lev status) 'inactive) (-> lev info)) (the float (-> lev info index)) 0.0))
+      (set! (-> st out (+ 17 (* 2 i))) (the float (mc-level-code lev)))))
+  (set! (-> st out 20) (the float (-> st stream-want)))
+  (set! (-> st out 21) 0.0)
   (pc-mc-send-state (&-> st out 0))
   (none))
 
@@ -1067,13 +1134,57 @@
     (if (logtest? b MC_BUTTON_JAK_DOWN) (set! out (logior out (pad-buttons down))))
     out))
 
+(defun mc-jak-on-steve? ((st mc-passthrough-state))
+  "#t when Jak is meant to be on Steve's feet right now (not while the game is using him, not
+   while Steve is down a hole, not just after the game moved him somewhere)."
+  (and (= (-> st mode) 'steve)
+       (-> st parked?)
+       *target*
+       (= (-> st jak) *target*)
+       (not (mc-packet-flag? st MC_FLAG_IN_HOLE))
+       (not (mc-jak-busy?))))
+
+(defun mc-passthrough-early-snap! ((st mc-passthrough-state))
+  "Start of the frame, before Jak and his world run: put Jak where Steve is right now (the newest
+   Minecraft packet), so this frame's enemies, pickups, triggers and level loading all see Jak
+   exactly where Steve is instead of where he was last frame. update-camera puts him there again
+   at the end of the frame."
+  (when (and (mc-packet-fresh? st) (mc-jak-on-steve? st))
+    (mc-passthrough-compute-pose! st)
+    ;; something moved Jak far since the end of last frame: leave that to mc-passthrough-park-jak!
+    (when (< (vector-vector-distance (-> *target* control trans) (-> st last-park)) (meters 8.0))
+      (mc-snap-jak! st)))
+  (none))
+
+(defun mc-jak-punch-buttons ((st mc-passthrough-state))
+  "Steve's left click makes the hidden Jak punch too (Minecraft's jak_punch setting), turned the
+   way Steve looks: Jak's own punch, from Steve's feet, hits what Jak's fist reaches. Returns the
+   square button on the frame the click starts, 0 otherwise."
+  (let ((buttons (the int (-> st raw MC_RAW_BUTTONS)))
+        (out 0))
+    (when (and (logtest? buttons MC_BUTTON_ATTACK)
+               (not (logtest? (-> st pad-prev-buttons) MC_BUTTON_ATTACK))
+               (mc-packet-flag? st MC_FLAG_JAK_PUNCH)
+               (mc-jak-on-steve? st))
+      (let ((dir (new 'stack-no-clear 'vector)))
+        (set-vector! dir (-> st aim x) 0.0 (-> st aim z) 0.0)
+        (when (< 0.01 (vector-length dir))
+          (vector-normalize! dir 1.0)
+          (set-heading-vec! (-> *target* control) dir)
+          (rot->dir-targ! (-> *target* control))))
+      (set! out (the int (pad-buttons square))))
+    (set! (-> st pad-prev-buttons) buttons)
+    out))
+
 (defun mc-passthrough-pad! ((pad cpad-info))
   "Controller 0, every frame. While Minecraft is playing, Jak doesn't walk, jump or attack by
-   himself: only START / SELECT (Jak's pause menu, to save) and Minecraft's Jak keys get through."
+   himself: only START / SELECT (Jak's pause menu, to save) and Minecraft's Jak keys get through.
+   This runs at the start of each frame, so Jak is also put on Steve's feet here."
   (let ((st *mc-passthrough*))
     (when (and (= (-> st mode) 'steve) (= *master-mode* 'game) (not *progress-process*))
+      (mc-passthrough-early-snap! st)
       (let ((keep (logand (-> pad button0) (pad-buttons start select)))
-            (jak-keys (mc-buttons->pad (the int (-> st raw MC_RAW_BUTTONS)))))
+            (jak-keys (logior (mc-buttons->pad (the int (-> st raw MC_RAW_BUTTONS))) (mc-jak-punch-buttons st))))
         ;; look like a connected dualshock with centred sticks
         (set! (-> pad valid) (the-as uint 0))
         (set! (-> pad status) (the-as uint #x73))

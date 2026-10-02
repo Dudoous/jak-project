@@ -96,7 +96,7 @@ struct JakStatePacket {
 
 static_assert(sizeof(CameraPacket) == 88, "CameraPacket layout changed - update PROTOCOL.md");
 constexpr int kMinCameraPacket = 64;  // older bridges send no feet / look direction
-static_assert(sizeof(JakStatePacket) == 56, "JakStatePacket layout changed - update PROTOCOL.md");
+static_assert(sizeof(JakStatePacket) == 100, "JakStatePacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(EventPacket) == 36, "EventPacket layout changed - update PROTOCOL.md");
 
 // Minecraft -> Jak: blocks the player built near Steve (x, y, z, kind)
