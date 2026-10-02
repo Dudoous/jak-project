@@ -61,6 +61,18 @@ public final class JakSky {
     private static float jakFps = 0f;
     private static float receivedFps = 0f;
 
+    public static int frameWidth() {
+        return frameWidth;
+    }
+
+    public static int frameHeight() {
+        return frameHeight;
+    }
+
+    public static float frameAspect() {
+        return frameHeight > 0 ? (float) frameWidth / frameHeight : 0f;
+    }
+
     /** "Jak draws 60 fps, Minecraft gets 60 fps, upload 1.2 ms" for /jakcraft. */
     public static String stats() {
         if (reader == null) return "no frame reader";

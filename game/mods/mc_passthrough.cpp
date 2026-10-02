@@ -361,7 +361,7 @@ bool steve_mode_active() {
   if (!g_have_packet || !(g_latest.flags & kFlagSteveMode)) {
     return false;
   }
-  return clock_type::now() - g_latest_time < std::chrono::milliseconds(250);
+  return clock_type::now() - g_latest_time < std::chrono::milliseconds(1500);
 }
 
 u64 goal_send_state(u32 src) {

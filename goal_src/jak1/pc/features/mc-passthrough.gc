@@ -112,7 +112,9 @@
    (spawn        vector :inline) ;; where Minecraft must put Steve (jak units, feet)
    (last-park    vector :inline) ;; where we left Jak last frame
    (pos          vector :inline)
-   (fwd          vector :inline)))
+   (fwd          vector :inline)
+   (jak          process)   ;; the Jak we took over (a warp gate or a new game makes a new one)
+   (in-movie?    symbol)))
 
 (define *mc-passthrough*
   (new 'static
@@ -121,7 +123,7 @@
        :mode #f
        :match-fov? #t
        :debug? #f
-       :timeout-ms 250.0
+       :timeout-ms 1500.0 ;; Minecraft hitches (saving, loading chunks) must not hand Jak back
        :scale (meters 1.0)
        :eye-height (meters 1.62)
        :melee-reach (meters 4.5)))
@@ -138,15 +140,17 @@
   (logtest? (the int (-> st raw MC_RAW_FLAGS)) flag))
 
 (defun mc-set-jak-hidden! ((hidden symbol))
-  "Hide or show Jak and Daxter."
+  "Hide or show Jak and Daxter. This only stops them from being drawn (skip-bones): the real
+   'hidden' flag is part of the game's own logic (a warp gate waits for Jak to become hidden at
+   the end of his jump into it before it loads the next level), so it is left alone."
   (when *target*
     (if hidden
-      (logior! (-> *target* draw status) (draw-status hidden))
-      (logclear! (-> *target* draw status) (draw-status hidden))))
+      (logior! (-> *target* draw status) (draw-status skip-bones))
+      (logclear! (-> *target* draw status) (draw-status skip-bones))))
   (when *sidekick*
     (if hidden
-      (logior! (-> *sidekick* draw status) (draw-status hidden))
-      (logclear! (-> *sidekick* draw status) (draw-status hidden))))
+      (logior! (-> *sidekick* draw status) (draw-status skip-bones))
+      (logclear! (-> *sidekick* draw status) (draw-status skip-bones))))
   (none))
 
 (defun mc-restore-aspect! ((st mc-passthrough-state))
@@ -176,7 +180,9 @@
   (none))
 
 (defun mc-passthrough-activate! ((st mc-passthrough-state))
-  "Minecraft takes over: remember where Jak stood (Minecraft puts Steve there)."
+  "Minecraft takes over (or Jak was made anew, after a warp gate): remember where Jak stands,
+   Minecraft puts Steve there."
+  (set! (-> st jak) *target*)
   (set! (-> st spawn quad) (-> *target* control trans quad))
   (set! (-> st last-park quad) (-> *target* control trans quad))
   (set! (-> st parked?) #f)
@@ -477,9 +483,12 @@
     (cond
       ((not (-> st enabled?)) (mc-passthrough-release! st))
       ((not (mc-packet-fresh? st)) (mc-passthrough-release! st))
-      ;; no Jak yet (title screen, loading a save): nothing to take over
-      ((not *target*) (mc-passthrough-release! st))
-      ((not (-> st mode)) (mc-passthrough-activate! st)))
+      ;; no Jak right now (title screen, or the moment between a warp gate and the next level,
+      ;; when the game makes a new Jak): stay in charge and wait for him
+      ((not *target*) #f)
+      ((not (-> st mode)) (mc-passthrough-activate! st))
+      ;; a new Jak (warp gate, new game): start over from where he is
+      ((!= (-> st jak) *target*) (mc-passthrough-activate! st)))
     (if (-> st mode) #t #f)))
 
 (defun mc-passthrough-compute-pose! ((st mc-passthrough-state))
@@ -626,18 +635,51 @@
       (format *stdcon* "cam ~,,2M ~,,2M ~,,2M~%" (-> st pos x) (-> st pos y) (-> st pos z))))
   (none))
 
+(defun mc-jak-away? ((st mc-passthrough-state))
+  "#t while the game has taken Jak far from Steve by itself (warp gate, respawn, launcher) and
+   until Minecraft has brought Steve there. Jak's own camera follows him meanwhile, so Jak's world
+   loads around Jak, not around where Steve was."
+  (let ((feet (new 'stack-no-clear 'vector)))
+    (set! (-> feet quad) (-> st pos quad))
+    (-! (-> feet y) (-> st eye-height))
+    (if (and (< (meters 12.0) (vector-vector-distance (-> *target* control trans) feet))
+             (or (mc-jak-busy?)
+                 (and (not (-> st parked?)) (not (time-elapsed? (-> st handover-time) (seconds 3))))))
+      #t
+      #f)))
+
 (defun mc-passthrough-camera! ((mcam math-camera))
   "Hook called from update-camera. Returns #t if Minecraft drove the camera this frame."
-  (let ((st *mc-passthrough*))
+  (let ((st *mc-passthrough*)
+        (jak-camera (logior JAK_STATE_FLAG_STEVE JAK_STATE_FLAG_CUTSCENE)))
     (cond
       ((not (mc-passthrough-poll)) #f)
-      ((movie?)
-       ;; cutscene: it plays with Jak's own camera (and Jak in it); Minecraft shows it full screen
-       (mc-set-jak-hidden! #f)
-       (mc-sync-aspect! st)
-       (mc-passthrough-report! st (logior JAK_STATE_FLAG_STEVE JAK_STATE_FLAG_CUTSCENE))
+      ((not *target*)
+       ;; between levels: Jak's own camera (loading, warp effect); Minecraft shows it full screen
+       (mc-passthrough-report! st jak-camera)
        #f)
-      (else (mc-passthrough-apply! mcam) #t))))
+      (else
+       (mc-passthrough-compute-pose! st)
+       (cond
+         ((movie?)
+          ;; cutscene: it plays with Jak's own camera and Jak in it (shown once, the cutscene may
+          ;; hide him itself); Minecraft shows it full screen
+          (when (not (-> st in-movie?))
+            (set! (-> st in-movie?) #t)
+            (mc-set-jak-hidden! #f))
+          (mc-sync-aspect! st)
+          (mc-passthrough-report! st jak-camera)
+          #f)
+         ((mc-jak-away? st)
+          (set! (-> st in-movie?) #f)
+          (mc-passthrough-park-jak! st) ;; keeps him hidden, sends Steve after him once he lands
+          (mc-sync-aspect! st)
+          (mc-passthrough-report! st jak-camera)
+          #f)
+         (else
+          (set! (-> st in-movie?) #f)
+          (mc-passthrough-apply! mcam)
+          #t))))))
 
 (set! *mc-passthrough-camera-hook* mc-passthrough-camera!)
 

@@ -50,7 +50,7 @@ the camera is at Steve's eyes; after that Jak comes back.
 | `[0..2]` | where Steve must be (Jak meters, feet): where Jak stood when Minecraft took over or where the game last moved Jak |
 | `[3]` | total damage Jak's enemies dealt to Steve (Minecraft health points, only grows) |
 | `[4]` | Jak health |
-| `[5]` | flags: bit 1 = Minecraft has taken over, bit 2 = a cutscene plays with Jak's own camera (show the picture full screen) |
+| `[5]` | flags: bit 1 = Minecraft has taken over, bit 2 = Jak's own camera is showing (cutscene, warp gate, loading, Jak flying somewhere by himself): show the picture full screen |
 | `[6]` | activation id — changes each time Minecraft takes over and each time the game moved Jak somewhere by itself (warp gate, launcher, checkpoint); Minecraft teleports Steve to `[0..2]` once per id |
 | `[7]` | Jak water surface at Steve (Jak meters), below −50000 = no water |
 

@@ -16,7 +16,8 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
     — punching a warp gate switch always presses it, even before you have that island's power
     cells; TNT breaks every crate, even steel ones;
   - when the game moves Jak somewhere by itself (warp gate, launcher, checkpoint, cutscene),
-    Steve is teleported after him;
+    you watch Jak's own camera full screen until he lands, then Steve is teleported after him —
+    warp gates work with the bridge on;
   - **cutscenes** play full screen with Jak's own camera (and Jak in them).
 - **Jak's ground is solid for Steve**: Jak's level shape becomes invisible barrier blocks, so you
   walk on Jak's floors, bump into Jak's walls, and swim in Jak's water. **Crates** (scout fly
@@ -64,7 +65,7 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
    Jak's level shape). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.9.0.jar` (from the
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.10.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
 3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
    **Fancy** (not Fabulous), **Max Framerate 120 or more** (or Unlimited) so Minecraft picks up
@@ -77,7 +78,8 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
    Keep Jak's window open (it can be behind Minecraft, just don't minimise it).
 
 Keys in Minecraft: **F8** bridge on/off, **F7** back to where Jak was standing, **F6** locked /
-fast view. Type **`/jakcraft`** in chat to see what's connected, Jak's picture frame rate (what
+fast view, **F9** sync info on screen (whether the view is locked to Jak's picture and if not why,
+both frame rates, both picture shapes — red lines are the problem). Type **`/jakcraft`** in chat to see what's connected, Jak's picture frame rate (what
 Jak draws and what Minecraft receives — both should say about 60), how far it is behind your
 mouse, the collision status, and how many of your blocks Jak knows about.
 

@@ -60,19 +60,26 @@ public final class JakBridgeClient implements ClientModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
 
     /** JAK_STATE packets older than this are ignored (Jak closed, paused in a menu, ...). */
-    private static final long JAK_STATE_TIMEOUT_NANOS = 500_000_000L;
+    private static final long JAK_STATE_TIMEOUT_NANOS = 3_000_000_000L;
 
     private static BridgeSocket bridge;
     private static JakCraftConfig config;
     private static CollisionPlacer collision;
     private static volatile boolean streaming = true;
     private static volatile boolean inJakWorld = false;
-    /** Don't lock the view to a Jak picture that is older than this (Jak stalled, loading...). */
-    private static final long MAX_LOCK_DELAY_NANOS = 300_000_000L;
+    /**
+     * Don't lock the view to a Jak picture older than this. Generous on purpose: while Jak's
+     * picture keeps coming, a locked view that is a bit late looks right; an unlocked one doesn't.
+     */
+    private static final long MAX_LOCK_DELAY_NANOS = 1_500_000_000L;
 
     private static KeyBinding toggleKey;
     private static KeyBinding respawnKey;
     private static KeyBinding viewKey;
+    private static KeyBinding overlayKey;
+    private static boolean overlay = false;
+    private static volatile String lockState = "not started";
+    private static volatile boolean viewIsLocked = false;
     private static final KeyBinding[] jakKeys = new KeyBinding[7];
     private static final int[] jakKeyBits = {
             BridgeSocket.BUTTON_JAK_CIRCLE, BridgeSocket.BUTTON_JAK_X, BridgeSocket.BUTTON_JAK_TRIANGLE,
@@ -81,6 +88,7 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static volatile boolean cutscene = false;
     private static boolean viewLocked = true;
     private static boolean cameraSentThisFrame = false;
+    private static volatile boolean cameraHookSeen = false;
     /** When each CAMERA packet was sent, by sequence number (to measure how far behind Jak is). */
     private static final int[] sentSeq = new int[1024];
     private static final long[] sentNanos = new long[1024];
@@ -193,6 +201,8 @@ public final class JakBridgeClient implements ClientModInitializer {
                 "key.jakbridge.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "category.jakbridge"));
         respawnKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.jakbridge.respawn", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F7, "category.jakbridge"));
+        overlayKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.jakbridge.overlay", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F9, "category.jakbridge"));
         viewKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.jakbridge.view_sync", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F6, "category.jakbridge"));
         String[] jakKeyNames = {"jak_circle", "jak_x", "jak_triangle", "jak_left", "jak_right", "jak_up", "jak_down"};
@@ -219,6 +229,7 @@ public final class JakBridgeClient implements ClientModInitializer {
                 drawContext.draw(); // flush the HUD first so the cutscene covers it
                 JakSky.drawCutscene();
             }
+            if (overlay) drawOverlay(drawContext);
         });
 
         // Jak's ground is barrier blocks: don't let a left click (creative) knock holes in it.
@@ -286,18 +297,61 @@ public final class JakBridgeClient implements ClientModInitializer {
      */
     public static JakSky.Pose onCameraUpdate(Vec3d pos, float yaw, float pitch) {
         cameraSentThisFrame = true;
+        cameraHookSeen = true;
         sendCamera(pos, yaw, pitch);
         JakSky.latch();
-        if (!viewLocked || !streaming || !inJakWorld || cutscene) return null;
+        JakSky.Pose p = lockPose();
+        viewIsLocked = p != null;
+        return p;
+    }
+
+    private static JakSky.Pose lockPose() {
+        if (!streaming) return unlocked("bridge off (F8)");
+        if (!viewLocked) return unlocked("fast view (F6)");
+        if (!inJakWorld) return unlocked("Jak not connected");
+        if (cutscene) return unlocked("Jak's own camera (cutscene / warp / loading)");
         JakSky.Pose p = JakSky.framePose();
-        if (p == null) return null;
+        if (p == null) return unlocked(JakSky.active() ? "Jak's picture has no camera pose" : "no picture from Jak");
         int slot = p.seq & (sentSeq.length - 1);
-        if (sentSeq[slot] != p.seq || sentNanos[slot] == 0) return null;
+        if (sentSeq[slot] != p.seq || sentNanos[slot] == 0) return unlocked("picture pose too old");
         long delay = System.nanoTime() - sentNanos[slot];
         jakDelayMs = delay / 1_000_000f;
-        if (delay > MAX_LOCK_DELAY_NANOS) return null;
+        if (delay > MAX_LOCK_DELAY_NANOS) return unlocked(String.format("picture %.0f ms behind", jakDelayMs));
+        lockState = String.format("LOCKED, %.0f ms behind your mouse", jakDelayMs);
         return new JakSky.Pose(p.seq, p.x, p.y + collision.yOffset(), p.z, p.yaw, p.pitch);
     }
+
+    private static JakSky.Pose unlocked(String why) {
+        lockState = "NOT locked: " + why;
+        return null;
+    }
+
+    /** F9: what the bridge is doing, to see why the two pictures could drift apart. */
+    private static void drawOverlay(net.minecraft.client.gui.DrawContext ctx) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        Framebuffer fb = client.getFramebuffer();
+        float mcAspect = fb == null ? 0 : (float) fb.textureWidth / Math.max(1, fb.textureHeight);
+        float jakAspect = JakSky.frameAspect();
+        List<String> lines = new ArrayList<>();
+        lines.add("JakCraft view: " + lockState);
+        lines.add("Picture: " + JakSky.stats());
+        lines.add(String.format("Shape: Jak %dx%d (%.3f), Minecraft %dx%d (%.3f)%s", JakSky.frameWidth(), JakSky.frameHeight(),
+                jakAspect, fb == null ? 0 : fb.textureWidth, fb == null ? 0 : fb.textureHeight, mcAspect,
+                Math.abs(jakAspect - mcAspect) > 0.01f && jakAspect > 0 ? "  <- DIFFERENT" : ""));
+        lines.add(String.format("FOV %d, hooks: camera %s, fov %s, bobbing %s", client.options.getFov().getValue(),
+                cameraHookSeen ? "ok" : "MISSING", fovHookSeen ? "ok" : "fallback", bobHookSeen ? "ok" : "fallback"));
+        if (client.player != null) {
+            lines.add(String.format("Steve %.1f %.1f %.1f (Jak meters)%s", client.player.getX(),
+                    client.player.getY() - collision.yOffset(), client.player.getZ(), cutscene ? ", Jak's camera" : ""));
+        }
+        int y = 4;
+        for (String line : lines) {
+            int color = line.contains("NOT locked") || line.contains("DIFFERENT") || line.contains("MISSING") ? 0xFFFF6060 : 0xFFFFFFFF;
+            ctx.drawTextWithShadow(client.textRenderer, line, 4, y, color);
+            y += 10;
+        }
+    }
+
 
     /** /jakcraft: everything needed to tell what's wrong. */
     private static List<String> statusLines(MinecraftClient client) {
@@ -309,7 +363,7 @@ public final class JakBridgeClient implements ClientModInitializer {
         out.add("Jak picture: " + (JakSky.active() ? "receiving" : "not receiving")
                 + (jakDelayMs >= 0 ? String.format(", %.0f ms behind your mouse", jakDelayMs) : ""));
         out.add("Picture: " + JakSky.stats());
-        out.add("View: " + (viewLocked ? "locked to Jak's picture (F6 for fast)" : "fast, not locked (F6 to lock)"));
+        out.add("View: " + lockState + (viewLocked ? " (F6 for fast)" : " (F6 to lock)") + " - F9 shows this on screen");
         out.add("JakCraft folder: " + (config.jakcraftDir() == null ? "unknown (run play.bat once)" : config.jakcraftDir()));
         out.add("Collision: " + collision.status());
         if (collision.worldWarning() != null) out.add("World: " + collision.worldWarning());
@@ -353,6 +407,9 @@ public final class JakBridgeClient implements ClientModInitializer {
             boolean finalResult = collision.loaded() || !status.startsWith("loading");
             player.sendMessage(Text.literal("[JakCraft] " + status), !finalResult);
             lastStatusShown = status;
+        }
+        while (overlayKey.wasPressed()) {
+            overlay = !overlay;
         }
         while (viewKey.wasPressed()) {
             viewLocked = !viewLocked;

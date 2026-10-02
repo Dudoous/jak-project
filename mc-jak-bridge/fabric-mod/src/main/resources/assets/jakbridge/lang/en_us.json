@@ -10,5 +10,6 @@
   "key.jakbridge.jak_left": "Jak: left (d-pad)",
   "key.jakbridge.jak_right": "Jak: right (d-pad)",
   "key.jakbridge.jak_up": "Jak: up (d-pad)",
-  "key.jakbridge.jak_down": "Jak: down (d-pad)"
+  "key.jakbridge.jak_down": "Jak: down (d-pad)",
+  "key.jakbridge.overlay": "Show JakCraft sync info"
 }
