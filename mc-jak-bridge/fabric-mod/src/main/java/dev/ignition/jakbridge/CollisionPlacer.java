@@ -7,6 +7,11 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.attribute.EntityAttributeInstance;
+import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.entity.damage.DamageType;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.util.Identifier;
 import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.server.MinecraftServer;
@@ -71,6 +76,11 @@ public final class CollisionPlacer {
     private double bodyApplied = -1; // Steve's scale currently applied, 0 = vanilla, -1 = not set yet
     private volatile double[] pendingSpawn; // Jak meters, feet
     private volatile float pendingDamage = 0f;
+    /** Where the newest pending hit came from (Minecraft coordinates), or null for no direction. */
+    private volatile double[] pendingHitFrom = null;
+    /** Jak's enemies hurting Steve, see data/jakbridge/damage_type/jak_enemy.json. */
+    static final RegistryKey<DamageType> JAK_ENEMY_DAMAGE =
+            RegistryKey.of(RegistryKeys.DAMAGE_TYPE, Identifier.of("jakbridge", "jak_enemy"));
     private volatile String worldWarning = null;
     private boolean checkedWorldHeight = false;
     private int ticksUntilBlockScan = 0;
@@ -174,15 +184,42 @@ public final class CollisionPlacer {
         return worldWarning;
     }
 
-    /** Called from the client thread: Jak's enemies hit Steve for this many health points. */
-    public synchronized void addDamage(float hp) {
+    /**
+     * Called from the client thread: Jak's enemies hit Steve for this many health points, from
+     * (x, y, z) in Minecraft coordinates (NaN x: no direction, e.g. lava or a pit).
+     */
+    public synchronized void addDamage(float hp, double x, double y, double z) {
         pendingDamage += hp;
+        pendingHitFrom = Double.isNaN(x) ? null : new double[] {x, y, z};
     }
 
     private synchronized float takeDamage() {
         float d = pendingDamage;
         pendingDamage = 0f;
         return d;
+    }
+
+    /** Damage from Jak's world. It hurts in creative mode too (jak_damage_in_creative). */
+    private void hurtSteve(ServerWorld world, ServerPlayerEntity player, float damage) {
+        double[] from = pendingHitFrom;
+        if (!player.isAlive() || player.isSpectator()) return;
+        if (player.isCreative() && !config.jakDamageInCreative()) return;
+        DamageSource source;
+        try {
+            source = new DamageSource(world.getRegistryManager().get(RegistryKeys.DAMAGE_TYPE).entryOf(JAK_ENEMY_DAMAGE));
+        } catch (RuntimeException e) {
+            // the mod's damage type is missing (its data pack was turned off): Minecraft's own.
+            // Only "out of world" damage gets through creative mode.
+            source = player.isCreative() ? player.getDamageSources().outOfWorld() : player.getDamageSources().generic();
+        }
+        boolean hurt = player.damage(source, damage);
+        JakBridgeClient.LOG.info("Jak's world hit Steve for {} ({}), health now {}", damage, hurt ? "hurt" : "no effect",
+                player.getHealth());
+        if (hurt && from != null && player.isAlive()) {
+            // knocked away from whatever hit him, like a Minecraft mob hit
+            player.takeKnockback(0.5, from[0] - player.getX(), from[2] - player.getZ());
+            player.velocityModified = true;
+        }
     }
 
     /** Called from the client thread when Jak starts a new STEVE activation. */
@@ -230,8 +267,8 @@ public final class CollisionPlacer {
         }
 
         float damage = takeDamage();
-        if (damage > 0f && player.isAlive()) {
-            player.damage(player.getDamageSources().generic(), damage);
+        if (damage > 0f) {
+            hurtSteve(world, player, damage);
         }
 
         BlockState state = config.visibleCollision()

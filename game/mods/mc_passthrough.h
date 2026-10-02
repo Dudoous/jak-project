@@ -39,7 +39,9 @@ constexpr u32 kFlagScreenOpen = 2;
 constexpr u32 kFlagSteveMode = 8;  // Minecraft is the game; Jak only renders its world for it
 
 // Number of floats written by goal_get_camera.
-constexpr int kCameraFloats = 16;
+constexpr int kCameraFloats = 20;
+// floats in a JAK_STATE packet (see goal_send_state)
+constexpr int kJakStateFloats = 11;
 
 /// Start the listener thread (idempotent). Port can be overridden with OPENGOAL_MC_PORT.
 void start();
@@ -62,14 +64,19 @@ void stop();
  *                             32.. Jak's buttons (see PROTOCOL.md)
  *   [12..14] feet             Steve's feet (Jak meters); not under the camera in third person
  *   [15]    feet valid        1 if [12..14] were sent
+ *   [16..17] look yaw, pitch  where Steve himself looks (degrees; the camera can look the other way
+ *                             in third person)
+ *   [18]    look valid        1 if [16..17] were sent
+ *   [19]    unused
  * Returns 1 if a packet has ever been received, 0 otherwise.
  */
 u64 goal_get_camera(u32 dst);
 
 /*!
  * GOAL: (pc-mc-send-state src) -> int
- * Sends 8 floats from src to the last Minecraft client that sent us a packet:
- *   see JAK_STATE in PROTOCOL.md (position, damage to Steve, health, flags, activation, water)
+ * Sends kJakStateFloats (11) floats from src to the last Minecraft client that sent us a packet:
+ *   see JAK_STATE in PROTOCOL.md (position, damage to Steve, health, flags, activation, water,
+ *   where the last thing that hurt Steve was)
  * Returns 1 on success, 0 if no client is known yet.
  */
 u64 goal_send_state(u32 src);

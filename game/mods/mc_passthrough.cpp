@@ -70,7 +70,10 @@ struct CameraPacket {
   // since bridge 0.11 (80-byte packets): where Steve's feet are, which is not under the camera in
   // third person view
   float feet[3];
-  u32 body_flags;  // 1 = feet valid
+  u32 body_flags;  // 1 = feet valid, 2 = look valid
+  // since bridge 0.12 (88-byte packets): where Steve himself looks (degrees). The camera looks the
+  // other way in Minecraft's front view, and Steve's punches go where he looks.
+  float look_yaw, look_pitch;
 };
 
 struct EventPacket {
@@ -87,13 +90,13 @@ struct JakStatePacket {
   u16 version;
   u16 type;
   u32 seq;
-  float data[8];
+  float data[kJakStateFloats];
 };
 #pragma pack(pop)
 
-static_assert(sizeof(CameraPacket) == 80, "CameraPacket layout changed - update PROTOCOL.md");
-constexpr int kMinCameraPacket = 64;  // older bridges send no feet
-static_assert(sizeof(JakStatePacket) == 44, "JakStatePacket layout changed - update PROTOCOL.md");
+static_assert(sizeof(CameraPacket) == 88, "CameraPacket layout changed - update PROTOCOL.md");
+constexpr int kMinCameraPacket = 64;  // older bridges send no feet / look direction
+static_assert(sizeof(JakStatePacket) == 56, "JakStatePacket layout changed - update PROTOCOL.md");
 static_assert(sizeof(EventPacket) == 36, "EventPacket layout changed - update PROTOCOL.md");
 
 // Minecraft -> Jak: blocks the player built near Steve (x, y, z, kind)
@@ -272,6 +275,10 @@ u64 goal_get_camera(u32 dst) {
   out[13] = g_latest.feet[1];
   out[14] = g_latest.feet[2];
   out[15] = (g_latest.body_flags & 1) ? 1.f : 0.f;
+  out[16] = g_latest.look_yaw;
+  out[17] = g_latest.look_pitch;
+  out[18] = (g_latest.body_flags & 2) ? 1.f : 0.f;
+  out[19] = 0.f;
   g_last_read.valid = 1;
   g_last_read.seq = g_latest.seq;
   g_last_read.x = out[0];

@@ -25,14 +25,15 @@
 ;;    Minecraft's own physics (Jak's collision became invisible barrier blocks).
 ;;  - Jak and Daxter are gone: hidden, his controller is cut off and he is dragged along under
 ;;    Steve's feet, so levels and enemies keep loading around you and Jak's world reacts to Steve
-;;    (pickups, power cells, scout flies, eco vents, buttons, doors). Damage to Jak goes to Steve.
+;;    (pickups, power cells, scout flies, eco vents, buttons, doors). Whatever Steve's body touches
+;;    is picked up, also in third person. Damage to Jak goes to Steve (Minecraft health, knockback).
 ;;    When the game itself takes Jak somewhere (warp gate, cutscene, checkpoint, launcher), Steve is
 ;;    sent after him. A few Minecraft keys are Jak's buttons (talk to people, warp gates).
 ;;  - Cutscenes play with Jak's own camera and Minecraft shows them full screen.
 ;;  - Blocks Steve places are sent back (BLOCKS packet): Jak's enemies have to walk around them,
-;;    and lava / fire / magma / cactus kill enemies that walk into them. Steve's punches kill
-;;    enemies, break crates (scout fly boxes too) and press buttons; Minecraft explosions (TNT,
-;;    creepers) kill enemies and break every crate, and enemies hurt Steve.
+;;    and lava / fire / magma / cactus kill enemies that walk into them. Steve's punches (aimed
+;;    where Steve looks, also in third person) kill any enemy, break crates (scout fly boxes too) and
+;;    press buttons; Minecraft explosions (TNT, creepers) kill enemies and break every crate.
 ;;  - Every frame is tagged with the Minecraft camera pose it was drawn from (pc-mc-pose-used), so
 ;;    Minecraft can draw its own world from the same pose and the two pictures never drift apart.
 ;;
@@ -62,6 +63,9 @@
 (defconstant MC_RAW_FEET_Y 13)
 (defconstant MC_RAW_FEET_Z 14)
 (defconstant MC_RAW_HAS_FEET 15)
+(defconstant MC_RAW_LOOK_YAW 16)   ;; where Steve himself looks: the camera looks at him in front view
+(defconstant MC_RAW_LOOK_PITCH 17)
+(defconstant MC_RAW_HAS_LOOK 18)
 (defconstant MC_RAW_BUTTONS 11)
 
 ;; CAMERA packet flags (see PROTOCOL.md)
@@ -102,6 +106,8 @@
    (handovers    int32)     ;; times the game moved Jak somewhere and Steve was sent after him
    (handover-time time-frame) ;; when Steve was last asked to go to the spawn point
    (steve-damage float)     ;; total Minecraft health points of damage dealt to Steve
+   (hits         int32)     ;; times Jak's world hurt Steve
+   (kills        int32)     ;; Jak enemies Steve killed
    (last-hit-time time-frame)
    (last-attack-time time-frame)
    (prev-buttons int32)
@@ -112,14 +118,16 @@
    (saved-aspect-x int32)
    (saved-aspect-y int32)
    (event        float 5)
-   (raw          float 16)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
-   (out          float 8)   ;; JAK_STATE payload
+   (raw          float 20)  ;; latest packet, see pc-mc-get-camera in mc_passthrough.h
+   (out          float 11)  ;; JAK_STATE payload
    (spawn        vector :inline) ;; where Minecraft must put Steve (jak units, feet)
    (last-park    vector :inline) ;; where we left Jak last frame
    (pos          vector :inline) ;; the camera (Minecraft's, also in third person)
    (feet         vector :inline) ;; Steve's feet
    (eye          vector :inline) ;; Steve's eyes
-   (fwd          vector :inline)
+   (fwd          vector :inline) ;; where the camera looks
+   (aim          vector :inline) ;; where Steve looks (his punches go there)
+   (hit-from     vector :inline) ;; where the last thing that hurt Steve was (w = 0: nowhere)
    (jak          process)   ;; the Jak we took over (a warp gate or a new game makes a new one)
    (in-movie?    symbol)))
 
@@ -213,18 +221,104 @@
 ;; fighting Jak's enemies, getting hurt, water, explosions
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun mc-enemy? ((p process))
-  "A living Jak enemy that can be killed."
-  (and (type-type? (-> p type) nav-enemy) (logtest? (-> p mask) (process-mask attackable))))
+(defun mc-state-name ((p process))
+  "The name of the state p is in (or about to go to), #f if none."
+  (if (-> p next-state) (-> p next-state name) (the-as symbol #f)))
 
-(defun mc-kill-enemy! ((p process))
-  (format 0 "[mc-passthrough] Steve killed ~A~%" (-> p name))
-  (send-event p 'instant-death :from *target*)
+(defun mc-string-has? ((s string) (part string))
+  "#t if part appears in s."
+  (let ((n (length s))
+        (m (length part))
+        (found #f))
+    (dotimes (i (+ (- n m) 1))
+      (when (not found)
+        (let ((same #t))
+          (dotimes (j m)
+            (if (!= (-> s data (+ i j)) (-> part data j)) (set! same #f)))
+          (if same (set! found #t)))))
+    found))
+
+(defun mc-dying-state? ((name symbol))
+  "States of things that are dying or dead (nav-enemy-die, junglesnake-die, crate die...)."
+  (if (not name)
+    #f
+    (let ((s (symbol->string name)))
+      (or (mc-string-has? s "die") (mc-string-has? s "death") (mc-string-has? s "dead") (mc-string-has? s "fuel-cell")))))
+
+(defun mc-collide-root ((p process))
+  "p's collision shape, or #f. Only things with collision can be hit."
+  (if (type-type? (-> p type) process-drawable)
+    (let ((root (-> (the-as process-drawable p) root)))
+      (if (and (nonzero? root) root (type-type? (-> root type) collide-shape))
+        (the-as collide-shape root)
+        (the-as collide-shape #f)))
+    (the-as collide-shape #f)))
+
+(defun mc-enemy? ((p process))
+  "A living Jak enemy Steve can hurt. All of Jak's enemies (lurkers, snakes, bats, spiders, plants...)
+   have the enemy process mask. Nav-enemies lose the 'attackable' mask when they die but never had it
+   before, so it can't be used to find them."
+  (and (logtest? (-> p mask) (process-mask enemy))
+       (mc-collide-root p)
+       (not (mc-dying-state? (mc-state-name p)))))
+
+(defun mc-hittable? ((p process))
+  "Things Steve's punch hits: enemies, crates (scout fly boxes too), buttons (warp gate switches), and
+   the other things Jak can attack (spider eggs, dark crystals...)."
+  (and (!= p *target*)
+       (or (mc-enemy? p)
+           (and (or (type-type? (-> p type) crate)
+                    (type-type? (-> p type) basebutton)
+                    (logtest? (-> p mask) (process-mask attackable)))
+                (mc-collide-root p)
+                (not (mc-dying-state? (mc-state-name p)))))
+       #t))
+
+;; Jak's attacks reach their target as an 'attack event that says which collision prims touched:
+;; the attack handlers of Jak's enemies look at it (which part of them was hit, was it Jak's hand).
+;; Steve's attacks fill in one saying Jak's hand touched all of the target.
+(deftype mc-touch (structure)
+  ((shapes touching-shapes-entry :inline)
+   (prims  touching-prims-entry 8 :inline)))
+
+(define *mc-touch* (new 'global 'mc-touch))
+(define *mc-touch-count* 0)
+
+(defun mc-touch-add! ((hand collide-shape-prim) (prim collide-shape-prim))
+  (when (and (nonzero? prim) prim (< *mc-touch-count* 8))
+    (let ((e (-> *mc-touch* prims *mc-touch-count*)))
+      (set! (-> e next) (the-as touching-prims-entry #f))
+      (set! (-> e prev) (the-as touching-prims-entry #f))
+      (when (> *mc-touch-count* 0)
+        (set! (-> e prev) (-> *mc-touch* prims (+ *mc-touch-count* -1)))
+        (set! (-> *mc-touch* prims (+ *mc-touch-count* -1) next) e))
+      (set! (-> e allocated?) #t)
+      (set! (-> e u) 0.0)
+      (set! (-> e prim1 cprim) hand)
+      (set! (-> e prim1 has-tri?) #f)
+      (set! (-> e prim2 cprim) prim)
+      (set! (-> e prim2 has-tri?) #f)
+      (+! *mc-touch-count* 1)))
   (none))
 
-(defun mc-crate-or-button? ((p process))
-  "Crates (scout fly boxes too) and buttons (warp gate switches...): things Steve can hit."
-  (or (type-type? (-> p type) crate) (type-type? (-> p type) basebutton)))
+(defun mc-fake-touch ((p process))
+  "A touching-shapes-entry for 'Jak's hand touches all of p', or #f if p has no collision."
+  (let ((cs (mc-collide-root p)))
+    (if (or (not cs) (not *target*) (zero? (-> cs root-prim)))
+      (the-as touching-shapes-entry #f)
+      (let ((hand (-> *target* control unknown-sphere01)) ;; prim id 64, the one Jak punches with
+            (top (-> cs root-prim)))
+        (set! *mc-touch-count* 0)
+        (set! (-> *mc-touch* shapes cshape1) (-> *target* control))
+        (set! (-> *mc-touch* shapes cshape2) cs)
+        (set! (-> *mc-touch* shapes resolve-u) 0)
+        (mc-touch-add! hand top)
+        (when (type-type? (-> top type) collide-shape-prim-group)
+          (let ((g (the-as collide-shape-prim-group top)))
+            (dotimes (i (-> g num-prims))
+              (mc-touch-add! hand (-> g prims i)))))
+        (set! (-> *mc-touch* shapes head) (-> *mc-touch* prims 0))
+        (-> *mc-touch* shapes)))))
 
 (defun mc-send-attack! ((p process) (mode symbol))
   "Hit p the way Jak's own attacks do. 'flop breaks wooden and iron crates (scout fly boxes) and
@@ -233,7 +327,7 @@
     (set! (-> msg from) *target*)
     (set! (-> msg num-params) 4)
     (set! (-> msg message) 'attack)
-    (set! (-> msg param 0) (the-as uint #f))
+    (set! (-> msg param 0) (the-as uint (mc-fake-touch p)))
     (set! (-> msg param 1) (the-as uint mode))
     (+! *global-attack-id* 1)
     (set! (-> msg param 2) (the-as uint *global-attack-id*))
@@ -241,9 +335,25 @@
     (send-event-function p msg))
   (none))
 
+(defun mc-hit-enemy! ((p process))
+  "Steve's hit kills a Jak enemy. Jak's enemies each take Jak's attacks their own way (crabs hide in
+   their shell, armoured lurkers only die to red eco, bullies only to a ground pound), so Steve's hit
+   tries until one works: instant death (all lurkers), an explosion, a ground pound."
+  (let ((before (mc-state-name p)))
+    (if (type-type? (-> p type) nav-enemy) (send-event p 'instant-death :from *target*))
+    (if (= (mc-state-name p) before) (mc-send-attack! p 'explode))
+    (if (= (mc-state-name p) before) (mc-send-attack! p 'flop))
+    (cond
+      ((= (mc-state-name p) before)
+       (format 0 "[mc-passthrough] Steve hit ~A, it didn't care (~A)~%" (-> p name) before))
+      (else
+       (+! (-> *mc-passthrough* kills) 1)
+       (format 0 "[mc-passthrough] Steve hit ~A: ~A -> ~A~%" (-> p name) before (mc-state-name p)))))
+  (none))
+
 (defun mc-steve-hit! ((p process))
   (cond
-    ((mc-enemy? p) (mc-kill-enemy! p))
+    ((mc-enemy? p) (mc-hit-enemy! p))
     ((type-type? (-> p type) basebutton)
      (format 0 "[mc-passthrough] Steve punched button ~A~%" (-> p name))
      (mc-send-attack! p 'flop)
@@ -256,51 +366,66 @@
      (mc-send-attack! p 'flop)))
   (none))
 
+(defun mc-target-sphere! ((dst vector) (p process))
+  "Centre of p's collision, and its radius in w (at most 3 m: big things count from their middle)."
+  (set! (-> dst quad) (-> (mc-collide-root p) root-prim prim-core world-sphere quad))
+  (set! (-> dst w) (fmin (-> dst w) (meters 3.0)))
+  dst)
+
 ;; search state for iterate-process-tree (GOAL lambdas can't capture locals)
 (define *mc-search-origin* (new 'global 'vector))
 (define *mc-search-dir* (new 'global 'vector))
 (define *mc-search-reach* 0.0)
+(define *mc-search-top* 0.0)
 (define *mc-search-best* (the-as process #f))
-(define *mc-search-best-dist* 0.0)
+(define *mc-search-best-score* 0.0)
 
 (defun mc-steve-melee! ((st mc-passthrough-state))
-  "Left click in Minecraft: hit the closest enemy in front of Steve within reach."
+  "Left click in Minecraft: hit the closest thing Steve looks at within reach (from his own eyes and
+   where he looks, also in third person)."
   (set! (-> *mc-search-origin* quad) (-> st eye quad))
-  (set! (-> *mc-search-dir* quad) (-> st fwd quad))
+  (set! (-> *mc-search-dir* quad) (-> st aim quad))
   (set! *mc-search-reach* (-> st melee-reach))
   (set! *mc-search-best* #f)
-  (set! *mc-search-best-dist* (-> st melee-reach))
+  (set! *mc-search-best-score* 100000000.0)
   (iterate-process-tree
     *active-pool*
     (lambda ((p process))
-      (when (or (mc-enemy? p) (mc-crate-or-button? p))
-        (let ((to (new 'stack-no-clear 'vector)))
-          ;; aim at the middle, not the feet
-          (vector-! to (-> (the-as process-drawable p) root trans) *mc-search-origin*)
-          (+! (-> to y) (if (mc-enemy? p) (meters 0.8) (meters 0.4)))
-          (let ((dist (vector-length to)))
-            (when (and (< dist *mc-search-best-dist*)
-                       ;; within ~40 degrees of where Steve looks (or touching him)
-                       (or (< dist (meters 1.5)) (< (* 0.75 dist) (vector-dot to *mc-search-dir*))))
+      (when (mc-hittable? p)
+        (let ((sph (mc-target-sphere! (new 'stack-no-clear 'vector) p))
+              (to (new 'stack-no-clear 'vector)))
+          (vector-! to sph *mc-search-origin*)
+          (let* ((dist (vector-length to))
+                 (along (vector-dot to *mc-search-dir*))
+                 (side (sqrtf (fmax 0.0 (- (* dist dist) (* along along)))))
+                 (surface (fmax 0.0 (- dist (-> sph w))))
+                 ;; the closest thing, and the closer to the crosshair the better
+                 (score (+ surface (* 0.5 side))))
+            (when (and (< surface *mc-search-reach*)
+                       (< score *mc-search-best-score*)
+                       (or (< surface (meters 1.0)) ;; right next to Steve's head
+                           (and (< 0.0 along)
+                                (or (< side (+ (-> sph w) (meters 0.75))) ;; under the crosshair
+                                    (< (* 0.75 dist) along))))) ;; within ~40 degrees of it
               (set! *mc-search-best* p)
-              (set! *mc-search-best-dist* dist)))))
+              (set! *mc-search-best-score* score)))))
       #f)
     *kernel-context*)
   (if *mc-search-best* (mc-steve-hit! *mc-search-best*))
   (none))
 
 (defun mc-explode! ((x float) (y float) (z float) (radius float))
-  "A Minecraft explosion (TNT, creeper...) at Jak-space x y z: kill Jak enemies and break crates
+  "A Minecraft explosion (TNT, creeper...) at Jak-space x y z: kills Jak enemies and breaks crates
    in range."
   (set-vector! *mc-search-origin* x y z 1.0)
   (set! *mc-search-reach* radius)
   (iterate-process-tree
     *active-pool*
     (lambda ((p process))
-      ;; check the type first: only process-drawables have a root
-      (when (and (or (mc-enemy? p) (type-type? (-> p type) crate))
-                 (< (vector-vector-distance (-> (the-as process-drawable p) root trans) *mc-search-origin*) *mc-search-reach*))
-        (if (mc-enemy? p) (mc-kill-enemy! p) (mc-send-attack! p 'explode)))
+      (when (and (mc-hittable? p) (not (type-type? (-> p type) basebutton)))
+        (let ((sph (mc-target-sphere! (new 'stack-no-clear 'vector) p)))
+          (when (< (- (vector-vector-distance sph *mc-search-origin*) (-> sph w)) *mc-search-reach*)
+            (if (mc-enemy? p) (mc-hit-enemy! p) (mc-send-attack! p 'explode)))))
       #f)
     *kernel-context*)
   (none))
@@ -319,23 +444,42 @@
       (set! type (pc-mc-pop-event (&-> st event 0)))))
   (none))
 
-(defun mc-steve-attacked ((msg symbol) (info attack-info))
+(defun mc-attack-damage ((mode symbol))
+  "Minecraft health points an attack on Jak costs Steve (who has 20): Jak can take 3 hits, Steve 5.
+   Pits, lava, dark eco pools and the like kill him like they kill Jak."
+  (case mode
+    (('deadly 'lava 'dark-eco-pool 'melt 'drown-death 'endlessfall 'death 'tar 'instant-death 'ogreboss-super-boulder) 100.0)
+    (else 4.0)))
+
+(defun mc-steve-attacked ((msg symbol) (info attack-info) (from process))
   "Hook from target-attacked: while Minecraft is playing, attacks on the hidden Jak hurt Steve.
-   Returns #t if the attack was taken by Steve."
+   Returns 'hit when Steve got hurt, 'miss when he was hurt a moment ago and can't be hurt again yet
+   (like Jak blinking after a hit), #f when Jak should take the attack himself."
   (let ((st *mc-passthrough*))
     (cond
-      ((!= (-> st mode) 'steve) #f)
+      ((!= (-> st mode) 'steve) (the-as symbol #f))
+      ;; enemies keep "touching" Jak while they overlap him: one hit per 0.75 s
+      ((not (time-elapsed? (-> st last-hit-time) (seconds 0.75))) 'miss)
       (else
-       ;; one hit per 0.75 s: enemies keep "touching" Jak while they overlap him
-       (when (time-elapsed? (-> st last-hit-time) (seconds 0.75))
-         (set-time! (-> st last-hit-time))
-         (let ((mode (if (logtest? (-> info mask) (attack-mask mode)) (-> info mode) 'generic)))
-           (+! (-> st steve-damage)
-               (case mode
-                 (('deadly 'lava 'darkeco 'dark-eco-pool 'melt 'drown-death 'endlessfall 'death 'tar 'ogreboss-super-boulder) 100.0)
-                 (else 4.0)))
-           (format 0 "[mc-passthrough] Steve hit by ~A (~A), total damage ~,,1f~%" mode msg (-> st steve-damage))))
-       #t))))
+       (set-time! (-> st last-hit-time))
+       (let ((mode (if (logtest? (-> info mask) (attack-mask mode)) (-> info mode) 'generic)))
+         (+! (-> st steve-damage) (mc-attack-damage mode))
+         (+! (-> st hits) 1)
+         ;; where the hit came from: Minecraft knocks Steve away from it
+         (cond
+           ((and from (!= from *target*) (type-type? (-> from type) process-drawable) (nonzero? (-> (the-as process-drawable from) root)))
+            (set! (-> st hit-from quad) (-> (the-as process-drawable from) root trans quad))
+            (set! (-> st hit-from w) 1.0))
+           (else
+            ;; the ground itself (lava, pits, dark eco): no direction
+            (set! (-> st hit-from w) 0.0)))
+         (format 0
+                 "[mc-passthrough] Steve hit by ~A (~A, ~A), total damage ~,,1f~%"
+                 (if from (-> from name) "?")
+                 mode
+                 msg
+                 (-> st steve-damage)))
+       'hit))))
 
 (defun mc-water-surface ((st mc-passthrough-state))
   "Height of the Jak water Steve is in (Jak meters), or MC_NO_WATER."
@@ -344,6 +488,34 @@
     MC_NO_WATER))
 
 (set! *mc-passthrough-attack-hook* mc-steve-attacked)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; picking things up with Steve's body
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Jak picks things up by touching them, but he is only under Steve's feet and much smaller than
+;; Steve. So whatever Steve's body touches (precursor orbs, eco, power cells, scout flies, eco vents)
+;; gets touched by Jak too and Jak collects it, in first or third person.
+(defun mc-collect-near-steve! ((st mc-passthrough-state))
+  (let ((s (/ (-> st eye-height) (meters 1.62))))
+    (set! (-> *mc-search-origin* quad) (-> st feet quad))
+    (set! *mc-search-reach* (* s (meters 0.9)))
+    (set! *mc-search-top* (+ (-> st eye y) (meters 0.5))))
+  (iterate-process-tree
+    *active-pool*
+    (lambda ((p process))
+      (when (or (type-type? (-> p type) eco-collectable) (type-type? (-> p type) vent))
+        (let ((root (-> (the-as process-drawable p) root)))
+          (when (nonzero? root)
+            (let ((pos (-> root trans)))
+              (when (and (< (vector-vector-xz-distance pos *mc-search-origin*)
+                            (if (type-type? (-> p type) vent) (+ *mc-search-reach* (meters 0.6)) *mc-search-reach*))
+                         (< (- (-> *mc-search-origin* y) (meters 0.75)) (-> pos y))
+                         (< (-> pos y) *mc-search-top*))
+                (send-event p 'touch :from *target* (mc-fake-touch p)))))))
+      #f)
+    *kernel-context*)
+  (none))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Minecraft blocks in Jak's world
@@ -402,7 +574,7 @@
       *active-pool*
       (lambda ((p process))
         (when (mc-enemy? p)
-          (let ((epos (-> (the-as nav-enemy p) collide-info trans))
+          (let ((epos (-> (the-as process-drawable p) root trans))
                 (c (new 'stack-no-clear 'vector))
                 (hit #f))
             (dotimes (i *mc-block-count*)
@@ -410,7 +582,7 @@
                 (mc-block-center! c i)
                 (-! (-> c y) (meters 0.5)) ;; compare feet with the block's bottom
                 (if (< (vector-vector-distance c epos) (meters 1.3)) (set! hit #t))))
-            (if hit (mc-kill-enemy! p))))
+            (if hit (mc-hit-enemy! p))))
         #f)
       *kernel-context*))
   (none))
@@ -517,6 +689,14 @@
                  1.0)
     ;; Minecraft pitch is positive looking down, Jak +Y is up.
     (set-vector! (-> st fwd) (* (sin heading) cp) (- sp) (* (cos heading) cp) 0.0))
+  ;; where Steve himself looks: the same as the camera, except in Minecraft's front view
+  (cond
+    ((< 0.5 (-> st raw MC_RAW_HAS_LOOK))
+     (let* ((heading (- (degrees (-> st raw MC_RAW_LOOK_YAW))))
+            (pitch (degrees (fmax -90.0 (fmin 90.0 (-> st raw MC_RAW_LOOK_PITCH)))))
+            (cp (cos pitch)))
+       (set-vector! (-> st aim) (* (sin heading) cp) (- (sin pitch)) (* (cos heading) cp) 0.0)))
+    (else (set! (-> st aim quad) (-> st fwd quad))))
   ;; Steve's body: sent separately, since in third person the camera is behind him
   (cond
     ((< 0.5 (-> st raw MC_RAW_HAS_FEET))
@@ -674,6 +854,7 @@
   (mc-deadly-blocks!)
   (mc-send-solid-actors! st)
   (mc-stream-levels! st)
+  (mc-collect-near-steve! st)
   (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
     ;; punch on click, and keep punching every 0.35 s while held
     (when (and (logtest? buttons MC_BUTTON_ATTACK)
@@ -695,6 +876,17 @@
   (set! (-> st out 5) (the float flags))
   (set! (-> st out 6) (the float (-> st activations)))
   (set! (-> st out 7) (mc-water-surface st))
+  ;; where the last thing that hurt Steve was (Jak meters), so he is knocked away from it
+  (let ((inv-s (/ 1.0 (-> st scale))))
+    (cond
+      ((< 0.5 (-> st hit-from w))
+       (set! (-> st out 8) (* inv-s (-> st hit-from x)))
+       (set! (-> st out 9) (* inv-s (-> st hit-from y)))
+       (set! (-> st out 10) (* inv-s (-> st hit-from z))))
+      (else
+       (set! (-> st out 8) MC_NO_WATER)
+       (set! (-> st out 9) MC_NO_WATER)
+       (set! (-> st out 10) MC_NO_WATER))))
   (pc-mc-send-state (&-> st out 0))
   (none))
 
@@ -845,6 +1037,7 @@
   (let ((st *mc-passthrough*))
     (pc-mc-get-camera (&-> st raw 0))
     (format #t "enabled ~A mode ~A activations ~D handovers ~D blocks ~D~%" (-> st enabled?) (-> st mode) (-> st activations) (-> st handovers) *mc-block-count*)
+    (format #t "Steve: hurt ~D times (~,,1f health), killed ~D~%" (-> st hits) (-> st steve-damage) (-> st kills))
     (format #t "last packet: seq ~D age ~,,1fms vfov ~,,1f flags ~D~%" (the int (-> st raw MC_RAW_SEQ)) (-> st raw MC_RAW_AGE_MS) (-> st raw MC_RAW_VFOV) (the int (-> st raw MC_RAW_FLAGS)))
     (format #t
             "mc pos ~,,2f ~,,2f ~,,2f yaw ~,,1f pitch ~,,1f~%"

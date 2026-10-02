@@ -180,11 +180,16 @@
   arg0)
 
 ;; og:preserve-this Minecraft passthrough mod: set by pc/features/mc-passthrough.gc. While Minecraft is playing,
-;; attacks on the (hidden) Jak hurt Steve instead; the hook returns #t when it took the attack.
-(define *mc-passthrough-attack-hook* (the-as (function symbol attack-info symbol) #f))
+;; attacks on the (hidden) Jak hurt Steve instead. The hook gets the attack and the attacker and returns
+;; 'hit (Steve was hurt: the attack worked), 'miss (Steve just got hurt and can't be hurt again yet) or
+;; #f (not Minecraft's business: Jak handles it).
+(define *mc-passthrough-attack-hook* (the-as (function symbol attack-info process symbol) #f))
 
 (defbehavior target-attacked target ((arg0 symbol) (arg1 attack-info) (arg2 process) (arg3 touching-shapes-entry) (arg4 (state symbol attack-info target)))
-  (if (and *mc-passthrough-attack-hook* (*mc-passthrough-attack-hook* arg0 arg1)) (return #f))
+  (when *mc-passthrough-attack-hook*
+    (case (*mc-passthrough-attack-hook* arg0 arg1 arg2)
+      (('hit) (return #t))
+      (('miss) (return #f))))
   (when (not (logtest? (-> self state-flags) (state-flags being-attacked)))
     (cond
       ((or (logtest? (-> self state-flags) (state-flags invulnerable timed-invulnerable invuln-powerup))

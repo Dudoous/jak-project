@@ -11,5 +11,6 @@
   "key.jakbridge.jak_right": "Jak: right (d-pad)",
   "key.jakbridge.jak_up": "Jak: up (d-pad)",
   "key.jakbridge.jak_down": "Jak: down (d-pad)",
-  "key.jakbridge.overlay": "Show JakCraft sync info"
+  "key.jakbridge.overlay": "Show JakCraft sync info",
+  "death.attack.jakbridge.jak_enemy": "%1$s was taken out in Jak's world"
 }

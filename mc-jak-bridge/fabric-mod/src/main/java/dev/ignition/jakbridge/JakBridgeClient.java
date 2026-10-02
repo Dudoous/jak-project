@@ -24,6 +24,7 @@ import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
@@ -230,6 +231,7 @@ public final class JakBridgeClient implements ClientModInitializer {
                 JakSky.drawCutscene();
             }
             if (overlay) drawOverlay(drawContext);
+            drawCreativeHearts(drawContext);
         });
 
         // Jak's ground is barrier blocks: don't let a left click (creative) knock holes in it.
@@ -324,6 +326,37 @@ public final class JakBridgeClient implements ClientModInitializer {
     private static JakSky.Pose unlocked(String why) {
         lockState = "NOT locked: " + why;
         return null;
+    }
+
+    private static final Identifier HEART_CONTAINER = Identifier.ofVanilla("hud/heart/container");
+    private static final Identifier HEART_FULL = Identifier.ofVanilla("hud/heart/full");
+    private static final Identifier HEART_HALF = Identifier.ofVanilla("hud/heart/half");
+
+    /**
+     * Creative mode has no health bar, but Jak's enemies still hurt Steve (jak_damage_in_creative):
+     * show his hearts while he is hurt, where survival shows them.
+     */
+    private static void drawCreativeHearts(net.minecraft.client.gui.DrawContext ctx) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity p = client.player;
+        if (p == null || !inJakWorld || !p.isCreative() || !config.jakDamageInCreative() || client.options.hudHidden) return;
+        float health = p.getHealth();
+        float max = p.getMaxHealth();
+        if (health >= max || health <= 0f) return;
+        int x0 = ctx.getScaledWindowWidth() / 2 - 91;
+        int y = ctx.getScaledWindowHeight() - 39;
+        int points = (int) Math.ceil(health);
+        int hearts = Math.min(10, (int) Math.ceil(max / 2f));
+        for (int i = 0; i < hearts; i++) {
+            int x = x0 + i * 8;
+            ctx.drawGuiTexture(HEART_CONTAINER, x, y, 9, 9);
+            int left = points - i * 2;
+            if (left >= 2) {
+                ctx.drawGuiTexture(HEART_FULL, x, y, 9, 9);
+            } else if (left == 1) {
+                ctx.drawGuiTexture(HEART_HALF, x, y, 9, 9);
+            }
+        }
     }
 
     /** F9: what the bridge is doing, to see why the two pictures could drift apart. */
@@ -437,10 +470,13 @@ public final class JakBridgeClient implements ClientModInitializer {
             JakWater.clear();
             return;
         }
-        // data[3]: total damage Jak's enemies have done to Steve (Minecraft health points)
+        // data[3]: total damage Jak's enemies have done to Steve (Minecraft health points),
+        // data[8..10]: where the last hit came from (Jak meters; very negative = no direction)
         float jakDamage = s.data[3];
         if (lastJakDamage >= 0f && jakDamage > lastJakDamage) {
-            collision.addDamage(jakDamage - lastJakDamage);
+            boolean dir = !Float.isNaN(s.data[8]) && s.data[8] > -50000f;
+            collision.addDamage(jakDamage - lastJakDamage, dir ? s.data[8] : Double.NaN,
+                    dir ? s.data[9] + collision.yOffset() : 0, dir ? s.data[10] : 0);
         }
         lastJakDamage = jakDamage;
         // data[7]: Jak's water surface here (Jak meters), or very negative for none
@@ -526,8 +562,17 @@ public final class JakBridgeClient implements ClientModInitializer {
             float eye = (float) (client.player.getEyeY() - client.player.getY());
             // Steve's feet: in third person the camera isn't above them (Jak must be under Steve)
             Vec3d feet = steveFeet(client);
+            // and where Steve looks: in front view the camera looks at him, his punches go this way
+            float tickDelta = 1f;
+            try {
+                tickDelta = client.getRenderTickCounter().getTickDelta(true);
+            } catch (Throwable ignored) {
+                // keep the newest tick's angles
+            }
+            float lookYaw = MathHelper.wrapDegrees(client.player.getYaw(tickDelta));
+            float lookPitch = client.player.getPitch(tickDelta);
             int seq = bridge.sendCamera(x, y, z, yaw, pitchDeg, vfov, eye, 0f, buttons, flags,
-                    (float) feet.x, (float) (feet.y - collision.yOffset()), (float) feet.z);
+                    (float) feet.x, (float) (feet.y - collision.yOffset()), (float) feet.z, lookYaw, lookPitch);
             int slot = seq & (sentSeq.length - 1);
             sentSeq[slot] = seq;
             sentNanos[slot] = System.nanoTime();

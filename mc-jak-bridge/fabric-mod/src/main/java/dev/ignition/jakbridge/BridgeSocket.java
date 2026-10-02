@@ -26,8 +26,10 @@ public final class BridgeSocket implements AutoCloseable {
     public static final int EVENT_EXPLOSION = 1;
     public static final int EVENT_PACKET_SIZE = 36;
     public static final int DEFAULT_PORT = 47800;
-    public static final int CAMERA_PACKET_SIZE = 80;
-    public static final int JAK_STATE_PACKET_SIZE = 44;
+    public static final int CAMERA_PACKET_SIZE = 88;
+    /** JAK_STATE from this version of Jak's side; older ones send 44 bytes (8 floats). */
+    public static final int JAK_STATE_PACKET_SIZE = 56;
+    public static final int JAK_STATE_MIN_PACKET_SIZE = 44;
     /** Most blocks one BLOCKS packet carries (must match kMaxBlocks in mc_passthrough.h). */
     public static final int MAX_BLOCKS = 2048;
     public static final int BLOCK_SOLID = 1;
@@ -70,10 +72,11 @@ public final class BridgeSocket implements AutoCloseable {
         public long receivedNanos;
     }
 
-    /** Latest state the Jak side sent back (see PROTOCOL.md, JAK_STATE). */
+    /** Latest state the Jak side sent back (see PROTOCOL.md, JAK_STATE). Floats an older Jak side
+     *  didn't send are NaN. */
     public static final class JakState {
         public int seq;
-        public final float[] data = new float[8];
+        public final float[] data = new float[11];
         public long receivedNanos;
     }
 
@@ -112,6 +115,18 @@ public final class BridgeSocket implements AutoCloseable {
     public synchronized int sendCamera(double x, double y, double z, float yaw, float pitch,
                                         float vfov, float forward, float strafe, int buttons,
                                         int flags, float feetX, float feetY, float feetZ) throws IOException {
+        return sendCamera(x, y, z, yaw, pitch, vfov, forward, strafe, buttons, flags, feetX, feetY, feetZ,
+                Float.NaN, 0f);
+    }
+
+    /**
+     * Same, plus where Steve himself looks (degrees; NaN lookYaw = not sent). The camera looks the
+     * other way in Minecraft's front view; Steve's punches in Jak's world go where Steve looks.
+     */
+    public synchronized int sendCamera(double x, double y, double z, float yaw, float pitch,
+                                        float vfov, float forward, float strafe, int buttons,
+                                        int flags, float feetX, float feetY, float feetZ,
+                                        float lookYaw, float lookPitch) throws IOException {
         sendView.clear();
         sendView.putInt(MAGIC);
         sendView.putShort(VERSION);
@@ -132,7 +147,10 @@ public final class BridgeSocket implements AutoCloseable {
         sendView.putFloat(feet ? feetX : 0f);
         sendView.putFloat(feet ? feetY : 0f);
         sendView.putFloat(feet ? feetZ : 0f);
-        sendView.putInt(feet ? 1 : 0);
+        boolean look = !Float.isNaN(lookYaw);
+        sendView.putInt((feet ? 1 : 0) | (look ? 2 : 0));
+        sendView.putFloat(look ? lookYaw : 0f);
+        sendView.putFloat(look ? lookPitch : 0f);
         socket.send(new DatagramPacket(sendBuf, CAMERA_PACKET_SIZE, host, port));
         return mySeq;
     }
@@ -203,13 +221,14 @@ public final class BridgeSocket implements AutoCloseable {
                     latestActors = a;
                     continue;
                 }
-                if (type != TYPE_JAK_STATE || packet.getLength() < JAK_STATE_PACKET_SIZE) {
+                if (type != TYPE_JAK_STATE || packet.getLength() < JAK_STATE_MIN_PACKET_SIZE) {
                     continue;
                 }
                 JakState state = new JakState();
                 state.seq = in.getInt();
+                int floats = Math.min(state.data.length, (packet.getLength() - 12) / 4);
                 for (int i = 0; i < state.data.length; i++) {
-                    state.data[i] = in.getFloat();
+                    state.data[i] = i < floats ? in.getFloat() : Float.NaN;
                 }
                 state.receivedNanos = System.nanoTime();
                 latestJakState = state;

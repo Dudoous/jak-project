@@ -27,6 +27,8 @@ import java.util.Properties;
  *                      picture was taken from, so blocks never slide over Jak's world (the view
  *                      follows the mouse a few frames late). fast: no delay, but Jak's world trails
  *                      behind when you move. F6 switches in game.
+ *   jak_damage_in_creative  true (default): Jak's enemies, pits and lava hurt Steve in creative
+ *                      mode too (your hearts show while you're hurt). false: only in survival.
  */
 public final class JakCraftConfig {
     private final Path file;
@@ -143,6 +145,10 @@ public final class JakCraftConfig {
     public void setViewLocked(boolean locked) {
         props.setProperty("view_sync", locked ? "locked" : "fast");
         save();
+    }
+
+    public boolean jakDamageInCreative() {
+        return !"false".equalsIgnoreCase(props.getProperty("jak_damage_in_creative", "true").trim());
     }
 
     public int collisionRadius() {

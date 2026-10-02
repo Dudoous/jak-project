@@ -20,7 +20,7 @@ ignored.
 | 6      | u16  | type    | `1` = CAMERA, `2` = JAK_STATE, `3` = EVENT, `5` = BLOCKS, `6` = ACTORS (`4` unused) |
 | 8      | u32  | seq     | incrementing per sender |
 
-## CAMERA (type 1, Minecraft → Jak, 80 bytes, sent every rendered frame; 64-byte packets without the feet are still accepted)
+## CAMERA (type 1, Minecraft → Jak, 88 bytes, sent every rendered frame; older 64-byte (no feet) and 80-byte (no look direction) packets are still accepted)
 
 | Offset | Type | Field   | Notes |
 |-------:|------|---------|-------|
@@ -35,26 +35,29 @@ ignored.
 | 56     | f32  | strafe  | unused, 0 |
 | 60     | u32  | buttons | 1 jump, 2 sneak, 4 sprint, 8 attack, 16 use; Jak's buttons: 32 ○, 64 ✕, 128 △, 256 left, 512 right, 1024 up, 2048 down |
 | 64     | f32[3] | feet  | where Steve's feet are (Jak meters) — not under the camera in third person view |
-| 76     | u32  | body flags | 1 = feet valid |
+| 76     | u32  | body flags | 1 = feet valid, 2 = look direction valid |
+| 80     | f32  | look yaw   | where Steve himself looks (degrees, like yaw). Same as the camera, except in Minecraft's front view where the camera looks at Steve. Steve's punches in Jak's world go this way, from his eyes |
+| 84     | f32  | look pitch | |
 
 The runtime considers Minecraft "connected" while the newest CAMERA packet is younger than
 `(-> *mc-passthrough* timeout-ms)` (default 1500 ms). While connected, Jak is hidden and frozen and
 the camera is at Steve's eyes; after that Jak comes back.
 
-## JAK_STATE (type 2, Jak → Minecraft, 44 bytes)
+## JAK_STATE (type 2, Jak → Minecraft, 56 bytes; older runtimes send 44 bytes, without `[8..10]`)
 
 | Offset | Type   | Field | Notes |
 |-------:|--------|-------|-------|
-| 12     | f32[8] | data  | see below |
+| 12     | f32[11] | data | see below |
 
 | data | meaning |
 |------|---------|
 | `[0..2]` | where Steve must be (Jak meters, feet): where Jak stood when Minecraft took over or where the game last moved Jak |
-| `[3]` | total damage Jak's enemies dealt to Steve (Minecraft health points, only grows) |
+| `[3]` | total damage Jak's world dealt to Steve (Minecraft health points, only grows): 4 per enemy hit (at most one per 0.75 s), 100 for pits, lava, dark eco pools and the like |
 | `[4]` | Jak health |
 | `[5]` | flags: bit 1 = Minecraft has taken over, bit 2 = Jak's own camera is showing (cutscene, warp gate, loading, Jak flying somewhere by himself): show the picture full screen |
 | `[6]` | activation id — changes each time Minecraft takes over and each time the game moved Jak somewhere by itself (warp gate, launcher, checkpoint); Minecraft teleports Steve to `[0..2]` once per id |
 | `[7]` | Jak water surface at Steve (Jak meters), below −50000 = no water |
+| `[8..10]` | where the last thing that hurt Steve was (Jak meters), so Minecraft knocks him away from it; below −50000 = no direction (the ground: lava, a pit) |
 
 Sent every frame from GOAL with `(pc-mc-send-state ptr)` while Minecraft is connected. If no
 JAK_STATE arrives for 500 ms, Minecraft behaves normally.

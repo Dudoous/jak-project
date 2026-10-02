@@ -10,8 +10,9 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 - **Jak and Daxter are gone** — hidden, and they can't move by themselves. There is no Jak
   gameplay; OpenGOAL keeps Jak's world, enemies and water running around you, and the world
   reacts to Steve as it would to Jak:
-  - walk into **power cells, scout flies, precursor orbs and eco** to collect them; blue eco vents
-    charge you up, so blue eco doors and launchers work;
+  - walk into **power cells, scout flies, precursor orbs and eco** to collect them — anything
+    Steve's body touches is picked up, in first or third person; blue eco vents charge you up, so
+    blue eco doors and launchers work;
   - **left click breaks crates**, including the metal **scout fly boxes**, and presses **buttons**
     — punching a warp gate switch always presses it, even before you have that island's power
     cells; TNT breaks every crate, even steel ones;
@@ -41,8 +42,15 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
   - Jak's enemies have to **walk around your blocks**; a wall of blocks stops them.
   - **Lava, fire, magma, cactus, berry bushes, wither roses** kill Jak's enemies that walk into them.
   - **TNT / creepers**: the explosion kills Jak's enemies in the blast.
-- **Fighting**: left click kills the Jak enemy in front of Steve. Jak's enemies hurt Steve
-  (Minecraft health, you can die and respawn where you came in).
+- **Fighting**: left click kills the Jak enemy Steve looks at, up to ~7 blocks away (lurkers,
+  crabs, snakes, bats, plants, spiders — every kind, armoured ones too). It aims from Steve's own
+  eyes and where *he* looks, so it works in third person view and front view as well.
+- **Getting hurt**: Jak's enemies hurt Steve — 2 hearts a hit, at most one hit every 0.75 s — and
+  knock him back; pits, lava, dark eco and the like kill him like they kill Jak. It works in
+  **creative mode too** (creative has no health bar, so your hearts show above the hotbar while
+  you're hurt). You can die; you respawn where you last came into Jak's world. Set
+  `jak_damage_in_creative=false` in `.minecraft/config/jakbridge.properties` to be safe in
+  creative.
 - **Jak's buttons** for people and warp gates, in the Minecraft window:
 
   | Key | Jak button | Used for |
@@ -69,7 +77,7 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
 1. Unzip the **JakCraft-windows** package into a new folder, double-click **`play.bat`**, drag
    your Jak and Daxter `.iso` onto the window. First run takes 5–15 minutes (it also exports
    Jak's level shape). Later runs start straight away.
-2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.11.0.jar` (from the
+2. Minecraft **1.21.1** with Fabric Loader + Fabric API. Put `jakbridge-0.12.0.jar` (from the
    package's `minecraft-mod/` folder) in `%appdata%\.minecraft\mods`, removing older jakbridge jars.
 3. Minecraft settings (once): Video Settings → **FOV Effects 0%**, **Clouds OFF**, Graphics
    **Fancy** (not Fabulous), **Max Framerate 120 or more** (or Unlimited) so Minecraft picks up
