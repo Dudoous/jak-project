@@ -532,6 +532,70 @@
   (+! (-> st eye y) (-> st eye-height))
   (none))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; level streaming around Steve
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Jak 1 can only hold 2 levels at a time (two fixed memory heaps, and the renderer has draw
+;; buckets for exactly 2 levels). Its load boundaries switch them along the paths Jak can take.
+;; Steve can fly anywhere, so twice a second the 2 levels closest to Steve's camera are found, and
+;; if the one he is in hasn't been shown for a second, those 2 are loaded and shown.
+(define *mc-stream-timer* 0)
+(define *mc-stream-misses* 0)
+(define *mc-stream-last* (the-as symbol #f))
+
+(defun mc-stream-level? ((info level-load-info))
+  "Levels that are part of the world (not the title screen, intro, demo, test levels)."
+  (and (< 0.0 (-> info bsphere w))
+       (< (-> info bsphere w) (meters 5000.0))
+       (!= (-> info name) 'title)))
+
+(defun mc-stream-levels! ((st mc-passthrough-state))
+  (+! *mc-stream-timer* 1)
+  (when (>= *mc-stream-timer* 30)
+    (set! *mc-stream-timer* 0)
+    (let ((best (the-as level-load-info #f))
+          (best-score 1000000.0)
+          (second (the-as level-load-info #f))
+          (second-score 100000000.0)
+          (rest *level-load-list*))
+      ;; the level Steve is in: the one whose bounding sphere he is deepest inside (relative to
+      ;; its size, so a small level inside a big one wins)
+      (while (not (null? rest))
+        (let ((info (the-as level-load-info (-> (the-as symbol (car rest)) value))))
+          (when (and info (mc-stream-level? info))
+            (let ((score (/ (vector-vector-distance (-> st pos) (-> info bsphere)) (-> info bsphere w))))
+              (when (< score best-score)
+                (set! best info)
+                (set! best-score score)))))
+        (set! rest (cdr rest)))
+      ;; its neighbour: the other level whose edge is closest
+      (set! rest *level-load-list*)
+      (while (not (null? rest))
+        (let ((info (the-as level-load-info (-> (the-as symbol (car rest)) value))))
+          (when (and info (!= info best) (mc-stream-level? info))
+            (let ((edge (- (vector-vector-distance (-> st pos) (-> info bsphere)) (-> info bsphere w))))
+              (when (< edge second-score)
+                (set! second info)
+                (set! second-score edge)))))
+        (set! rest (cdr rest)))
+      (when best
+        (if (= (level-status *level* (-> best name)) 'active)
+          (set! *mc-stream-misses* 0)
+          (+! *mc-stream-misses* 1))
+        (when (>= *mc-stream-misses* 2)
+          (set! *mc-stream-misses* 0)
+          (let ((a (-> best name))
+                (b (if second (-> second name) (the-as symbol #f))))
+            (when (!= a *mc-stream-last*)
+              (format 0 "[mc-passthrough] loading ~A and ~A around Steve~%" a b))
+            (set! *mc-stream-last* a)
+            (load-state-want-levels a b)
+            (load-state-want-display-level a 'display)
+            (if b (load-state-want-display-level b 'display))
+            (load-state-want-vis (-> best nickname)))))))
+  (none))
+
 ;; Jak isn't drawn (skip-bones), and the renderer counts down an object's death / warp effect
 ;; timer only while it draws it. The game waits for the 'death-end at the end of that timer
 ;; (a warp gate loads the next level once Jak has vanished into it), so count it down here.
@@ -609,6 +673,7 @@
   (mc-refresh-blocks!)
   (mc-deadly-blocks!)
   (mc-send-solid-actors! st)
+  (mc-stream-levels! st)
   (let ((buttons (the int (-> st raw MC_RAW_BUTTONS))))
     ;; punch on click, and keep punching every 0.35 s while held
     (when (and (logtest? buttons MC_BUTTON_ATTACK)

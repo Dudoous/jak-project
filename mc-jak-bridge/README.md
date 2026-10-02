@@ -19,7 +19,9 @@ Minecraft × GTA V passthrough: one game supplies the world, Minecraft supplies 
     you watch Jak's own camera full screen until he lands, then Steve is teleported after him —
     warp gates work with the bridge on;
   - Jak's world loads around **Steve**: the next areas, enemies and pickups load where Steve
-    looks and walks (also in third person view);
+    looks and walks (also in third person view). Jak and Daxter can only keep **2 areas** in
+    memory at once, so when you fly somewhere new (creative), the area you're in and its nearest
+    neighbour are loaded for you — give it a second or two to appear;
   - **cutscenes** play full screen with Jak's own camera (and Jak in them).
 - **Jak's ground is solid for Steve**: Jak's level shape becomes invisible barrier blocks, so you
   walk on Jak's floors, bump into Jak's walls, and swim in Jak's water. **Crates** (scout fly
